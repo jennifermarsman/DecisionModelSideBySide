@@ -108,10 +108,18 @@ async function run() {
   const labels = state.labels.map((l) => ({ ...l }));
 
   try {
-    const { items } = await (await fetch(`/api/data/${state.scenario}`, { signal })).json();
+    const resp = await fetch(`/api/data/${state.scenario}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ labels }),
+      signal,
+    });
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.error || `HTTP ${resp.status}`);
+    const { items, prompts } = data;
     // Both models run at the same time; each side classifies its items one call at a time.
     const results = await Promise.all(
-      Object.keys(panels).map((model) => runSide(model, items, labels, signal)),
+      Object.keys(panels).map((model) => runSide(model, items, labels, signal, prompts)),
     );
     showRelative(results);
   } catch (err) {
@@ -125,7 +133,7 @@ function stop() {
   state.controller?.abort();
 }
 
-async function runSide(model, items, labels, signal) {
+async function runSide(model, items, labels, signal, prompts) {
   const start = performance.now();
   let calls = 0;
   let modelMs = 0;
@@ -138,8 +146,10 @@ async function runSide(model, items, labels, signal) {
   requestAnimationFrame(tick);
 
   try {
-    for (const text of items) {
+    for (const [index, text] of items.entries()) {
       if (signal.aborted) break;
+      field(model, 'prompt').classList.remove('muted');
+      field(model, 'prompt').textContent = prompts[index][model];
       const resp = await fetch(`/api/classify/${model}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -154,8 +164,6 @@ async function runSide(model, items, labels, signal) {
       }
       calls += 1;
       modelMs += data.model_ms;
-      field(model, 'prompt').classList.remove('muted');
-      field(model, 'prompt').textContent = data.prompt;
       field(model, 'calls').textContent = String(calls);
       field(model, 'model').textContent = fmt(modelMs);
       field(model, 'avg').textContent = fmt(modelMs / calls);

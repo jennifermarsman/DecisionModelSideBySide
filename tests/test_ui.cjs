@@ -12,9 +12,10 @@ function setup(fetch) {
     return {
       textContent: '',
       style: {},
+      children: [],
       classList: { remove() {} },
-      append() {},
-      replaceChildren() {},
+      append(...children) { this.children.push(...children); },
+      replaceChildren(...children) { this.children = children; },
     };
   }
   const panels = Object.fromEntries(['openai', 'decision'].map((model) => {
@@ -34,6 +35,10 @@ function setup(fetch) {
     performance: { now: () => 100 },
     requestAnimationFrame() {},
     fetch,
+    prompts: ['first', 'second'].map((text) => ({
+      openai: `LLM request: ${text}`,
+      decision: `Decision request: ${text}`,
+    })),
   });
   vm.runInContext(source, context);
   vm.runInContext('resetPanels()', context);
@@ -54,11 +59,12 @@ for (const model of ['openai', 'decision']) {
       return response;
     });
     const result = vm.runInContext(
-      `runSide('${model}', ['first', 'second'], [], { aborted: false })`, context,
+      `runSide('${model}', ['first', 'second'], [], { aborted: false }, prompts)`, context,
     );
     while (!release) await new Promise(setImmediate);
     assert.equal(fields[model].calls.textContent, '1');
     assert.equal(fields[model].completion.textContent, '');
+    assert.equal(fields[model].prompt.textContent, context.prompts[1][model]);
     release();
     assert.equal((await result).complete, true);
     assert.equal(fields[model].completion.textContent, 'Done');
@@ -68,6 +74,36 @@ for (const model of ['openai', 'decision']) {
     assert.equal(fields[model].completion.textContent, '');
   });
 }
+
+test('both requests appear before either response, without advancing results or progress', async () => {
+  const pending = {};
+  const { context, fields } = setup((url) => new Promise((resolve) => {
+    pending[url.split('/').pop()] = resolve;
+  }));
+  const results = vm.runInContext(
+    `Promise.all(['openai', 'decision'].map((model) =>
+      runSide(model, ['first'], [], { aborted: false }, prompts)))`, context,
+  );
+  for (const model of ['openai', 'decision']) {
+    assert.equal(typeof pending[model], 'function');
+    assert.equal(fields[model].prompt.textContent, context.prompts[0][model]);
+    assert.equal(fields[model].calls.textContent, '0');
+    assert.equal(fields[model].bar.style.width, '0');
+    assert.equal(fields[model].results.children.length, 0);
+    assert.equal(fields[model].completion.textContent, '');
+    pending[model]({
+      ok: true,
+      json: async () => ({ label: 'Support', model_ms: 10 }),
+    });
+  }
+  await results;
+  for (const model of ['openai', 'decision']) {
+    assert.equal(fields[model].calls.textContent, '1');
+    assert.equal(fields[model].bar.style.width, '100%');
+    assert.equal(fields[model].results.children.length, 1);
+    assert.equal(fields[model].completion.textContent, 'Done');
+  }
+});
 
 for (const outcome of ['http-error', 'network-error', 'abort']) {
   test(`${outcome} does not show Done`, async () => {
@@ -80,7 +116,7 @@ for (const outcome of ['http-error', 'network-error', 'abort']) {
       throw error;
     });
     const result = await vm.runInContext(
-      "runSide('openai', ['sample'], [], { aborted: false })", context,
+      "runSide('openai', ['sample'], [], { aborted: false }, prompts)", context,
     );
     assert.equal(result.complete, false);
     assert.equal(fields.openai.completion.textContent, '');

@@ -36,6 +36,30 @@ def test_config_and_data_endpoints(client):
     assert client.get("/api/data/nope").status_code == 404
 
 
+@pytest.mark.parametrize("scenario", list(SCENARIOS))
+def test_request_previews_match_classification_prompts(monkeypatch, client, scenario):
+    monkeypatch.setenv("MOCK_MODELS", "true")
+    monkeypatch.setattr(classifiers.time, "sleep", lambda s: None)
+    labels = LABELS + [{"name": " Other! ", "description": " A custom label "}]
+    response = client.post(f"/api/data/{scenario}", json={"labels": labels})
+    assert response.status_code == 200
+    data = response.get_json()
+    assert data["items"] == client.get(f"/api/data/{scenario}").get_json()["items"]
+    assert len(data["prompts"]) == len(data["items"])
+    for model in ("openai", "decision"):
+        for index in (0, len(data["items"]) - 1):
+            result = client.post(
+                f"/api/classify/{model}", json={"text": data["items"][index], "labels": labels}
+            )
+            assert result.status_code == 200
+            assert data["prompts"][index][model] == result.get_json()["prompt"]
+
+
+@pytest.mark.parametrize("body", [[], {"labels": "invalid"}, {"labels": []}, {"labels": [{}]}])
+def test_request_previews_validate_labels(client, body):
+    assert client.post("/api/data/expenses", json=body).status_code == 400
+
+
 def test_match_label():
     assert classifiers.match_label("technical support.", LABELS) == "Technical Support"
     assert classifiers.match_label("Label: Other", LABELS) == "Other"

@@ -56,6 +56,10 @@ def build_openai_messages(text, labels):
     ]
 
 
+def format_openai_prompt(messages):
+    return "\n\n".join(f"[{m['role']}]\n{m['content']}" for m in messages)
+
+
 def match_label(answer, labels):
     """Map a free-form model answer back to one of the label names."""
     answer = (answer or "").strip()
@@ -118,7 +122,7 @@ def _openai_client():
 
 def classify_openai(text, labels):
     messages = build_openai_messages(text, labels)
-    prompt = "\n\n".join(f"[{m['role']}]\n{m['content']}" for m in messages)
+    prompt = format_openai_prompt(messages)
     client = None if mock_enabled() else _openai_client()
     start = time.perf_counter()
     if client is None:
