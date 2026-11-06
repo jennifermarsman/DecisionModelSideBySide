@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Decision Model Side-by-Side</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header>
+    <h1>Decision Model Side-by-Side</h1>
+    <p>Classify the same data in parallel with a general-purpose Azure OpenAI model and Microsoft-Decision-1, and compare their labels and speed.</p>
+  </header>
+
+  <section class="controls">
+    <div class="row">
+      <label for="scenario">Scenario</label>
+      <select id="scenario"></select>
+      <span id="scenario-desc" class="muted"></span>
+      <span id="mock-badge" class="badge" hidden>Mock models</span>
+      <button id="run" class="primary">Run</button>
+    </div>
+    <div class="row">
+      <label>Labels</label>
+      <ul id="labels"></ul>
+      <form id="add-label">
+        <input id="new-label" placeholder="Add a label" maxlength="60" autocomplete="off">
+        <button type="submit">Add</button>
+      </form>
+      <button id="reset-labels" class="link">Reset to defaults</button>
+    </div>
+  </section>
+
+  <main>
+    <section class="panel" data-model="openai">
+      <h2>Azure OpenAI <span class="model-name" data-field="name"></span></h2>
+      <div class="stats">
+        <div><span class="stat" data-field="wall">0.000 s</span><small>Wall clock</small></div>
+        <div><span class="stat" data-field="calls">0</span><small>Model calls</small></div>
+        <div><span class="stat" data-field="model">0.000 s</span><small>Model time</small></div>
+        <div><span class="stat" data-field="avg">0.000 s</span><small>Avg per call</small></div>
+      </div>
+      <div class="progress"><div data-field="bar"></div></div>
+      <p class="relative" data-field="relative"></p>
+      <details open>
+        <summary>Prompt being executed</summary>
+        <pre data-field="prompt" class="muted">Press Run to start.</pre>
+      </details>
+      <ol class="results" data-field="results"></ol>
+    </section>
+
+    <section class="panel" data-model="decision">
+      <h2>Microsoft Decision <span class="model-name" data-field="name"></span></h2>
+      <div class="stats">
+        <div><span class="stat" data-field="wall">0.000 s</span><small>Wall clock</small></div>
+        <div><span class="stat" data-field="calls">0</span><small>Model calls</small></div>
+        <div><span class="stat" data-field="model">0.000 s</span><small>Model time</small></div>
+        <div><span class="stat" data-field="avg">0.000 s</span><small>Avg per call</small></div>
+      </div>
+      <div class="progress"><div data-field="bar"></div></div>
+      <p class="relative" data-field="relative"></p>
+      <details open>
+        <summary>Request being executed</summary>
+        <pre data-field="prompt" class="muted">Press Run to start.</pre>
+      </details>
+      <ol class="results" data-field="results"></ol>
+    </section>
+  </main>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
