@@ -44,7 +44,11 @@ def data(scenario):
 def classify(model):
     if model not in CLASSIFIERS:
         return jsonify({"error": "Unknown model"}), 404
-    body = request.get_json(silent=True) or {}
+    body = request.get_json(silent=True)
+    if not isinstance(body, dict):
+        return jsonify({"error": "The request body must be a JSON object."}), 400
+    if not isinstance(body.get("labels", []), list):
+        return jsonify({"error": "'labels' must be an array."}), 400
     text = str(body.get("text", "")).strip()
     labels = [
         {"name": str(l.get("name", "")).strip(), "description": str(l.get("description", "")).strip()}

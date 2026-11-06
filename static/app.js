@@ -129,8 +129,9 @@ async function runSide(model, items, labels, signal) {
   let modelMs = 0;
   let done = false;
   const tick = () => {
+    if (done) return;
     field(model, 'wall').textContent = fmt(performance.now() - start);
-    if (!done) requestAnimationFrame(tick);
+    requestAnimationFrame(tick);
   };
   requestAnimationFrame(tick);
 

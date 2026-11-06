@@ -58,11 +58,12 @@ def build_openai_messages(text, labels):
 
 def match_label(answer, labels):
     """Map a free-form model answer back to one of the label names."""
-    answer = (answer or "").strip().strip("\"'.`").strip()
+    answer = (answer or "").strip()
     names = [l["name"] for l in labels]
     for name in names:
         if answer.lower() == name.lower():
             return name
+    answer = answer.strip("\"'.`").strip()
     for name in sorted(names, key=len, reverse=True):
         if name.lower() in answer.lower():
             return name
