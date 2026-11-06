@@ -22,7 +22,7 @@ body {
   background: var(--bg);
 }
 
-header { padding: 14px 24px 6px; }
+header { padding: 14px 24px 6px; background: linear-gradient(110deg, #eff6ff, #f5f3ff); border-bottom: 1px solid #e7eaf0; }
 header h1 { margin: 0; font-size: 20px; font-weight: 600; }
 header p { margin: 4px 0 0; color: var(--muted); }
 
@@ -69,20 +69,24 @@ main {
   flex-direction: column;
   background: var(--panel);
   border: 1px solid var(--border);
+  border-top: 3px solid var(--model-accent);
   border-radius: 10px;
   padding: 14px 16px;
+  box-shadow: 0 2px 8px rgb(31 35 40 / 5%);
 }
-.panel h2 { margin: 0 0 10px; font-size: 16px; font-weight: 600; }
+.panel[data-model="openai"] { --model-accent: #2867b2; --model-accent-soft: #edf4fc; }
+.panel[data-model="decision"] { --model-accent: #7651b5; --model-accent-soft: #f3effa; }
+.panel h2 { margin: 0 0 10px; color: var(--model-accent); font-size: 16px; font-weight: 600; }
 .model-name { color: var(--muted); font-weight: 400; font-size: 13px; }
 
 .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
-.stats > div { background: var(--bg); border-radius: 8px; padding: 8px 10px; }
-.stat { display: block; font-size: 20px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.stats > div { background: var(--model-accent-soft); border-radius: 8px; padding: 8px 10px; }
+.stat { display: block; color: var(--model-accent); font-size: 20px; font-weight: 600; font-variant-numeric: tabular-nums; }
 .stats small { color: var(--muted); }
 
 .progress { height: 4px; background: var(--border); border-radius: 2px; margin: 10px 0 4px; overflow: hidden; }
-.progress > div { height: 100%; width: 0; background: var(--accent); transition: width .2s; }
-.relative { margin: 0 0 6px; min-height: 18px; color: var(--muted); font-size: 13px; }
+.progress > div { height: 100%; width: 0; background: var(--model-accent); transition: width .2s; }
+.relative { margin: 0 0 6px; min-height: 18px; color: var(--model-accent); font-size: 13px; }
 
 details { margin-bottom: 8px; }
 summary { cursor: pointer; color: var(--muted); font-size: 13px; }
@@ -116,10 +120,10 @@ pre {
   border-bottom: 1px solid var(--border);
 }
 .results .text { flex: 1; }
-.results .tag {
+.panel .results .tag {
   white-space: nowrap;
-  background: var(--accent-soft);
-  color: var(--accent);
+  background: var(--model-accent-soft);
+  color: var(--model-accent);
   border-radius: 10px;
   padding: 1px 8px;
   font-size: 12px;
