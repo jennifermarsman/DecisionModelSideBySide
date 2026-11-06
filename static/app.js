@@ -26,6 +26,7 @@ async function init() {
   for (const [key, s] of Object.entries(state.config.scenarios)) {
     select.add(new Option(s.name, key));
   }
+  select.value = 'expenses';
   select.addEventListener('change', () => selectScenario(select.value));
   selectScenario(select.value);
 
