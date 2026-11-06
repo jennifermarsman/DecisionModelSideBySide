@@ -1,3 +1,5 @@
+from types import SimpleNamespace
+
 import pytest
 
 import classifiers
@@ -37,6 +39,34 @@ def test_config_and_data_endpoints(client):
 def test_match_label():
     assert classifiers.match_label("technical support.", LABELS) == "Technical Support"
     assert classifiers.match_label("Label: Other", LABELS) == "Other"
+
+
+def test_classify_openai_uses_model_default_temperature(monkeypatch, client):
+    monkeypatch.setenv("AZURE_OPENAI_ENDPOINT", "https://example.openai.azure.com/")
+    monkeypatch.setenv("AZURE_OPENAI_API_KEY", "test-key")
+    monkeypatch.setenv("AZURE_OPENAI_DEPLOYMENT", "my-reasoning-deployment")
+    monkeypatch.delenv("MOCK_MODELS", raising=False)
+    calls = []
+
+    def fake_create(**kwargs):
+        assert "temperature" not in kwargs
+        calls.append(kwargs)
+        return SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content="Technical Support"))]
+        )
+
+    fake_client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=fake_create)))
+    monkeypatch.setattr(classifiers, "_openai_client", lambda: fake_client)
+    resp = client.post("/api/classify/openai", json={"text": "Needs help", "labels": LABELS})
+    data = resp.get_json()
+    assert resp.status_code == 200
+    assert data["label"] == "Technical Support"
+    assert data["model_ms"] >= 0
+    assert "Respond with only the label name" in data["prompt"]
+    assert calls == [{
+        "model": "my-reasoning-deployment",
+        "messages": classifiers.build_openai_messages("Needs help", LABELS),
+    }]
 
 
 def test_label_keys_are_unique_identifiers():

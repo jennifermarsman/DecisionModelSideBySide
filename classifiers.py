@@ -127,7 +127,6 @@ def classify_openai(text, labels):
         resp = client.chat.completions.create(
             model=_env("AZURE_OPENAI_DEPLOYMENT"),
             messages=messages,
-            temperature=0,
         )
         label = match_label(resp.choices[0].message.content, labels)
     model_ms = (time.perf_counter() - start) * 1000
