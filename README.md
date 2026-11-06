@@ -24,6 +24,25 @@ Labels can be added and removed in the UI before a run; **Reset to defaults** (o
 
 Prerequisites: Python 3.10+, an Azure OpenAI chat deployment, and a Microsoft-Decision-1 deployment in a Microsoft Foundry resource.
 
+The Decision side sends one typed `choice` question per item, as described in [Deploy and use Microsoft-Decision-1](https://learn.microsoft.com/azure/foundry/foundry-models/how-to/use-foundry-models-microsoft-decision):
+
+```json
+POST <DECISION_ENDPOINT>/providers/microsoft/v1/systemone
+{
+  "model": "<DECISION_DEPLOYMENT>",
+  "state": "<item text>",
+  "questions": {
+    "category": {
+      "type": "choice",
+      "instructions": "Classify the text into the single best matching category.",
+      "criteria": { "<label_key>": "<label description>", "...": "..." }
+    }
+  }
+}
+```
+
+The response's `answers.category.choice` is mapped back to the label name.
+
 1. Create a virtual environment and install dependencies:
 
    ```bash
@@ -45,7 +64,7 @@ Prerequisites: Python 3.10+, an Azure OpenAI chat deployment, and a Microsoft-De
    | `AZURE_OPENAI_DEPLOYMENT` | Name of your chat model deployment (e.g. `gpt-4o-mini`) |
    | `AZURE_OPENAI_API_VERSION` | API version (default `2024-10-21`) |
    | `DECISION_ENDPOINT` | Your Foundry resource endpoint; the app calls `<endpoint>/providers/microsoft/v1/systemone` |
-   | `DECISION_API_KEY` | Foundry resource API key |
+   | `DECISION_API_KEY` | Foundry resource API key. Optional: leave empty to use Microsoft Entra ID instead (e.g. run `az login`; your identity needs a role such as *Cognitive Services User* on the resource) |
    | `DECISION_DEPLOYMENT` | Name of your Microsoft-Decision-1 deployment (the deployment name, not the model name) |
    | `MOCK_MODELS` | Set to `true` to try the UI without any Azure resources (simulated classifiers and latency) |
    | `PORT` | Port to listen on (default `5000`) |

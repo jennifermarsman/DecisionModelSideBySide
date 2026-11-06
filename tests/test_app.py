@@ -105,3 +105,22 @@ def test_missing_configuration_is_reported(monkeypatch, client):
     resp = client.post("/api/classify/decision", json={"text": "hi", "labels": LABELS})
     assert resp.status_code == 500
     assert "DECISION_ENDPOINT" in resp.get_json()["error"]
+
+
+def test_decision_refusal():
+    keys = classifiers.label_keys(LABELS)
+    assert classifiers.parse_decision_response({"answers": {"category": {"type": "refusal"}}}, keys) == ("(refused)", None)
+
+
+def test_decision_uses_entra_id_without_api_key(monkeypatch):
+    monkeypatch.delenv("DECISION_API_KEY", raising=False)
+
+    class FakeCredential:
+        def get_token(self, scope):
+            assert scope == "https://cognitiveservices.azure.com/.default"
+            return type("Token", (), {"token": "entra-token"})()
+
+    monkeypatch.setattr(classifiers, "_entra_credential", lambda: FakeCredential())
+    headers = classifiers._decision_headers()
+    assert headers["Authorization"] == "Bearer " + "entra-token"
+    assert "api-key" not in headers

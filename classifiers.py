@@ -14,6 +14,7 @@ import time
 import requests
 
 DECISION_PATH = "/providers/microsoft/v1/systemone"
+DECISION_TOKEN_SCOPE = "https://cognitiveservices.azure.com/.default"
 QUESTION_NAME = "category"
 
 # Reuse connections across calls, like the OpenAI client does.
@@ -26,7 +27,8 @@ def _env(name, default=""):
 
 REQUIRED_SETTINGS = {
     "openai": ["AZURE_OPENAI_ENDPOINT", "AZURE_OPENAI_API_KEY", "AZURE_OPENAI_DEPLOYMENT"],
-    "decision": ["DECISION_ENDPOINT", "DECISION_API_KEY", "DECISION_DEPLOYMENT"],
+    # DECISION_API_KEY is optional: without it, Microsoft Entra ID (DefaultAzureCredential) is used.
+    "decision": ["DECISION_ENDPOINT", "DECISION_DEPLOYMENT"],
 }
 
 
@@ -131,8 +133,34 @@ def classify_openai(text, labels):
     return {"label": label, "prompt": prompt, "model_ms": model_ms}
 
 
+@functools.lru_cache(maxsize=1)
+def _entra_credential():
+    from azure.identity import DefaultAzureCredential
+
+    return DefaultAzureCredential()
+
+
+def _decision_headers():
+    """Use an API key when configured, otherwise a Microsoft Entra ID bearer token."""
+    headers = {"Content-Type": "application/json"}
+    api_key = _env("DECISION_API_KEY")
+    if api_key:
+        headers["api-key"] = api_key
+    else:
+        token = _entra_credential().get_token(DECISION_TOKEN_SCOPE).token
+        headers["Authorization"] = "Bearer " + token
+    return headers
+
+
 def parse_decision_response(data, keys):
+    """Map a decision response back to (label name, confidence).
+
+    A choice answer looks like {"type": "choice", "choice": <key>, "probabilities": {...}, "confidence": 0.9};
+    the model can also decline to decide with {"type": "refusal"}.
+    """
     answer = (data.get("answers") or {}).get(QUESTION_NAME) or {}
+    if answer.get("type") == "refusal":
+        return "(refused)", None
     choice = answer.get("choice")
     return keys.get(choice, choice or "(no answer)"), answer.get("confidence")
 
@@ -141,14 +169,15 @@ def classify_decision(text, labels):
     body, keys = build_decision_request(text, labels)
     prompt = json.dumps(body, indent=2)
     confidence = None
+    headers = None if mock_enabled() else _decision_headers()
     start = time.perf_counter()
-    if mock_enabled():
+    if headers is None:
         label = _mock(text, labels)
     else:
         url = _env("DECISION_ENDPOINT").rstrip("/") + DECISION_PATH
         resp = _session.post(
             url,
-            headers={"api-key": _env("DECISION_API_KEY"), "Content-Type": "application/json"},
+            headers=headers,
             json=body,
             timeout=60,
         )
