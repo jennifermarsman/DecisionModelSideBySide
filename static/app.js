@@ -80,6 +80,7 @@ function resetPanels() {
     field(model, 'model').textContent = fmt(0);
     field(model, 'avg').textContent = fmt(0);
     field(model, 'bar').style.width = '0';
+    field(model, 'completion').textContent = '';
     field(model, 'relative').textContent = '';
     field(model, 'prompt').textContent = 'Press Run to start.';
     field(model, 'results').replaceChildren();
@@ -171,7 +172,9 @@ async function runSide(model, items, labels, signal) {
   }
   const wallMs = performance.now() - start;
   field(model, 'wall').textContent = fmt(wallMs);
-  return { model, wallMs, complete: calls === items.length };
+  const complete = calls === items.length;
+  if (complete) field(model, 'completion').textContent = 'Done';
+  return { model, wallMs, complete };
 }
 
 function addResult(model, text, label, ms, isError) {

@@ -9,7 +9,7 @@
 <body>
   <header>
     <h1>Decision Model Side-by-Side</h1>
-    <p>Classify the same data in parallel with a general-purpose Azure OpenAI model and Microsoft-Decision-1, and compare their labels and speed.</p>
+    <p>Classify the same data in parallel with a general-purpose large language model and Microsoft-Decision-1, and compare their labels and speed.</p>
   </header>
 
   <section class="controls">
@@ -33,7 +33,7 @@
 
   <main>
     <section class="panel" data-model="openai">
-      <h2>Azure OpenAI <span class="model-name" data-field="name"></span></h2>
+      <h2>Large Language Model <span class="model-name" data-field="name"></span></h2>
       <div class="stats">
         <div><span class="stat" data-field="wall">0.000 s</span><small>Wall clock</small></div>
         <div><span class="stat" data-field="calls">0</span><small>Model calls</small></div>
@@ -41,9 +41,10 @@
         <div><span class="stat" data-field="avg">0.000 s</span><small>Avg per call</small></div>
       </div>
       <div class="progress"><div data-field="bar"></div></div>
+      <p class="completion" data-field="completion" role="status"></p>
       <p class="relative" data-field="relative"></p>
       <details open>
-        <summary>Prompt being executed</summary>
+        <summary>Request being executed</summary>
         <pre data-field="prompt" class="muted">Press Run to start.</pre>
       </details>
       <ol class="results" data-field="results"></ol>
@@ -58,6 +59,7 @@
         <div><span class="stat" data-field="avg">0.000 s</span><small>Avg per call</small></div>
       </div>
       <div class="progress"><div data-field="bar"></div></div>
+      <p class="completion" data-field="completion" role="status"></p>
       <p class="relative" data-field="relative"></p>
       <details open>
         <summary>Request being executed</summary>
