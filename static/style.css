@@ -86,7 +86,17 @@ main {
 
 .progress { height: 4px; background: var(--border); border-radius: 2px; margin: 10px 0 4px; overflow: hidden; }
 .progress > div { height: 100%; width: 0; background: var(--model-accent); transition: width .2s; }
-.completion { margin: 0 0 6px; color: #107c10; font-weight: 600; }
+.completion {
+  margin: 4px 0 8px;
+  padding: 10px 12px;
+  background: #107c10;
+  color: #fff;
+  border: 1px solid #0b5a0b;
+  border-radius: 8px;
+  font-size: 18px;
+  font-weight: 700;
+  text-align: center;
+}
 .completion:empty { display: none; }
 .relative { margin: 0 0 6px; min-height: 18px; color: var(--model-accent); font-size: 13px; }
 
