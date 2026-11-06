@@ -24,10 +24,17 @@ def _env(name, default=""):
     return os.getenv(name, default).strip()
 
 
-def _require(*names):
-    missing = [n for n in names if not _env(n)]
-    if missing:
-        raise RuntimeError(f"Missing configuration: set {', '.join(missing)} in your .env file.")
+REQUIRED_SETTINGS = {
+    "openai": ["AZURE_OPENAI_ENDPOINT", "AZURE_OPENAI_API_KEY", "AZURE_OPENAI_DEPLOYMENT"],
+    "decision": ["DECISION_ENDPOINT", "DECISION_API_KEY", "DECISION_DEPLOYMENT"],
+}
+
+
+def missing_settings(model):
+    """Names of required settings that are not configured for a model (none in mock mode)."""
+    if mock_enabled():
+        return []
+    return [n for n in REQUIRED_SETTINGS[model] if not _env(n)]
 
 
 def mock_enabled():
@@ -99,8 +106,6 @@ def _mock(text, labels):
 def _openai_client():
     from openai import AzureOpenAI
 
-    _require("AZURE_OPENAI_ENDPOINT", "AZURE_OPENAI_API_KEY", "AZURE_OPENAI_DEPLOYMENT")
-
     return AzureOpenAI(
         azure_endpoint=_env("AZURE_OPENAI_ENDPOINT"),
         api_key=_env("AZURE_OPENAI_API_KEY"),
@@ -140,7 +145,6 @@ def classify_decision(text, labels):
     if mock_enabled():
         label = _mock(text, labels)
     else:
-        _require("DECISION_ENDPOINT", "DECISION_API_KEY", "DECISION_DEPLOYMENT")
         url = _env("DECISION_ENDPOINT").rstrip("/") + DECISION_PATH
         resp = _session.post(
             url,

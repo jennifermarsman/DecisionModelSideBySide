@@ -103,5 +103,5 @@ def test_missing_configuration_is_reported(monkeypatch, client):
     monkeypatch.delenv("MOCK_MODELS", raising=False)
     monkeypatch.delenv("DECISION_ENDPOINT", raising=False)
     resp = client.post("/api/classify/decision", json={"text": "hi", "labels": LABELS})
-    assert resp.status_code == 502
+    assert resp.status_code == 500
     assert "DECISION_ENDPOINT" in resp.get_json()["error"]

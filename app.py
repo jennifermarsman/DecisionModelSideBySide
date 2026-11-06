@@ -7,7 +7,7 @@ from flask import Flask, jsonify, request, send_from_directory
 
 load_dotenv()
 
-from classifiers import CLASSIFIERS, mock_enabled  # noqa: E402
+from classifiers import CLASSIFIERS, missing_settings, mock_enabled  # noqa: E402
 from scenarios import SCENARIOS, load_data  # noqa: E402
 
 app = Flask(__name__, static_folder="static", static_url_path="/static")
@@ -53,11 +53,16 @@ def classify(model):
     ]
     if not text or not labels:
         return jsonify({"error": "Both 'text' and at least one label are required."}), 400
+    missing = missing_settings(model)
+    if missing:
+        return jsonify({"error": f"Missing configuration: set {', '.join(missing)} in your .env file."}), 500
     try:
         return jsonify(CLASSIFIERS[model](text, labels))
-    except Exception as exc:  # surface model/config errors in the UI
+    except Exception as exc:  # details go to the server log, not the browser
         app.logger.exception("Classification failed")
-        return jsonify({"error": f"{type(exc).__name__}: {exc}"}), 502
+        status = getattr(exc, "status_code", None) or getattr(getattr(exc, "response", None), "status_code", None)
+        detail = f" (HTTP {int(status)})" if isinstance(status, int) else ""
+        return jsonify({"error": f"Model call failed{detail}. See the server console for details."}), 502
 
 
 if __name__ == "__main__":
