@@ -1,4 +1,4 @@
-"""USD token-price snapshot verified against Azure pricing on 2026-11-06."""
+"""USD token pricing from an Azure snapshot and attributed user-provided updates."""
 
 import logging
 import math
@@ -21,6 +21,13 @@ RATES = {
         "output": 0.042,
         "basis": "Microsoft-Decision-1, standard token rate",
     },
+    "microsoft-decision-1.1": {
+        "input": 0.042,
+        "output": 0.042,
+        "basis": "Microsoft-Decision-1.1, user-provided rate (2026-11-10; same as Decision-1)",
+        "source": None,
+        "checked_on": None,
+    },
 }
 
 
@@ -41,8 +48,10 @@ def _rates(side, model):
             raise ValueError("Cost pricing rates must be finite, non-negative numbers.")
         return {**rates, "basis": "Configured USD pricing overrides", "source": None, "checked_on": None}
     name = re.sub(r"-\d{4}-\d{2}-\d{2}$", "", (model or "").lower())
+    if name == "dev-microsoft-decision-1.1":
+        name = "microsoft-decision-1.1"
     rates = RATES.get(name)
-    return {**rates, "source": SOURCE, "checked_on": CHECKED_ON} if rates else None
+    return {"source": SOURCE, "checked_on": CHECKED_ON, **rates} if rates else None
 
 
 def estimate_cost(side, model, usage):

@@ -35,6 +35,45 @@ def test_decision_override_applies_to_both_token_types(monkeypatch):
     assert result["cost_usd"] == pytest.approx(102 * 0.05 / 1_000_000)
 
 
+@pytest.mark.parametrize("model", [
+    "microsoft-decision-1.1",
+    "Microsoft-Decision-1.1",
+    "microsoft-decision-1.1-2026-11-10",
+    "dev-microsoft-decision-1.1",
+    "Dev-Microsoft-Decision-1.1",
+    "dev-microsoft-decision-1.1-2026-11-10",
+])
+def test_decision_1_1_uses_same_rate_as_decision_1(model):
+    usage = {"input_tokens": 1_000_000, "output_tokens": 100_000}
+    original = estimate_cost("decision", "microsoft-decision-1", usage)
+    result = estimate_cost("decision", model, usage)
+    assert result["cost_usd"] == pytest.approx(0.0462)
+    assert result["cost_usd"] == original["cost_usd"]
+    assert result["cost_unavailable_reason"] is None
+    assert "user-provided rate (2026-11-10" in result["pricing"]["basis"]
+    assert result["pricing"]["checked_on"] is None
+    assert result["pricing"]["source"] is None
+
+
+@pytest.mark.parametrize("model", ["microsoft-decision-1.1", "dev-microsoft-decision-1.1"])
+def test_decision_1_1_rate_can_be_overridden(monkeypatch, model):
+    monkeypatch.setenv("DECISION_USD_PER_MILLION", "0.05")
+    result = estimate_cost("decision", model, {
+        "input_tokens": 1_000_000, "output_tokens": 100_000,
+    })
+    assert result["cost_usd"] == pytest.approx(0.055)
+    assert result["pricing"]["basis"] == "Configured USD pricing overrides"
+
+
+@pytest.mark.parametrize("model", ["microsoft-decision-1.2", "dev-microsoft-decision-1.2"])
+def test_decision_1_1_price_is_not_applied_to_other_versions(model):
+    result = estimate_cost("decision", model, {
+        "input_tokens": 100, "output_tokens": 1,
+    })
+    assert result["cost_usd"] is None
+    assert "No verified price" in result["cost_unavailable_reason"]
+
+
 @pytest.mark.parametrize("usage", [
     None,
     [],

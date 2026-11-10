@@ -100,6 +100,13 @@ Rates are USD per **1 million tokens**:
 | --- | --- | --- | --- | --- |
 | GPT-6.1 Sol, Global Standard, short context | $2.00 | $0.10 | $2.50 | $10.00 |
 | Microsoft-Decision-1, standard token meter | $0.042 | N/A | N/A | $0.042 |
+| Microsoft-Decision-1.1, user-provided rate | $0.042 | N/A | N/A | $0.042 |
+
+Decision-1.1 uses the same $0.042 per million token rate as Decision-1, based on
+user-provided pricing context dated **November 10, 2026**. It is identified separately
+from the November 6 published-price snapshot in the UI.
+Both `microsoft-decision-1.1` and `dev-microsoft-decision-1.1` response model
+identifiers use this rate, including their dated variants.
 
 LLM cached-input and cache-write tokens are removed from ordinary input before
 their separate rates are applied. Output usage already includes reasoning tokens;
