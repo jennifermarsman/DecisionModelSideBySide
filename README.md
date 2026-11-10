@@ -6,7 +6,7 @@ A small web app that classifies the same sample data **in parallel** with:
 - **Left:** an Azure OpenAI chat model (prompted to answer with a single label)
 - **Right:** [Microsoft-Decision-1](https://learn.microsoft.com/azure/foundry/foundry-models/how-to/use-foundry-models-microsoft-decision) in Microsoft Foundry (a typed `choice` decision)
 
-For each side the UI shows the prompt/request being executed, the **wall clock time**, the **number of model calls**, the total **model time**, and the **average time per model call** (all in seconds), plus a scrolling list of each item and the label it was assigned. When both finish, each panel shows how much faster or slower it was.
+For each side the UI shows the prompt/request being executed, plus a single row of **wall clock time**, **number of model calls**, **average time per model call** (times in seconds), **estimated cost (USD)**, and **reported tokens**. A scrolling list shows each item and the label it was assigned. When both finish, each panel compares its speed and estimated cost.
 
 ## Scenarios
 
@@ -81,7 +81,7 @@ The response's `answers.category.choice` is mapped back to the label name.
 
 - **Wall clock**: measured in the browser from the start of a side's run until its last result arrives (includes network and app overhead).
 - **Model calls**: one call per data item.
-- **Model time**: the sum of the time spent inside each model API call, measured on the server.
+- **Model time** (calculated but hidden in the UI): the sum of the time spent inside each model API call, measured on the server.
 - **Avg per call**: model time ÷ model calls.
 
 Both sides run at the same time, and each side processes its items one call at a time.

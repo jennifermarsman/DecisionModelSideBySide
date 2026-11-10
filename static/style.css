@@ -79,12 +79,10 @@ main {
 .panel h2 { margin: 0 0 10px; color: var(--model-accent); font-size: 16px; font-weight: 600; }
 .model-name { color: var(--muted); font-weight: 400; font-size: 13px; }
 
-.stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
-.stats > div { background: var(--model-accent-soft); border-radius: 8px; padding: 8px 10px; }
-.stat { display: block; color: var(--model-accent); font-size: 20px; font-weight: 600; font-variant-numeric: tabular-nums; }
-.stats small { color: var(--muted); }
-.cost-stats { grid-template-columns: repeat(2, 1fr); margin-top: 8px; }
-.cost-stats .stat { font-size: 18px; overflow-wrap: anywhere; }
+.stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)) minmax(0, 1.5fr) minmax(0, 1fr); gap: 6px; }
+.stats > div { min-width: 0; background: var(--model-accent-soft); border-radius: 8px; padding: 8px; }
+.stat { display: block; color: var(--model-accent); font-size: clamp(12px, 1.4vw, 18px); font-weight: 600; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.stats small { color: var(--muted); font-size: 11px; }
 .pricing { margin: 6px 0 0; font-size: 12px; }
 .cost-note { padding: 0 24px 12px; font-size: 12px; }
 .cost-note a { color: var(--accent); }
@@ -152,5 +150,4 @@ pre {
   body { height: auto; }
   main { grid-template-columns: 1fr; }
   .results { max-height: 360px; }
-  .stats { grid-template-columns: repeat(2, 1fr); }
 }

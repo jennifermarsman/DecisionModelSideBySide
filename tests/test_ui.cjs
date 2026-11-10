@@ -142,10 +142,14 @@ test('cost totals aggregate completed responses, not pending calls', async () =>
   while (!release) await new Promise(setImmediate);
   assert.equal(fields.openai.cost.textContent, '$0.00001000');
   assert.equal(fields.openai.tokens.textContent, '11');
+  assert.equal(fields.openai.model.textContent, '0.010 s');
+  assert.equal(fields.openai.avg.textContent, '0.010 s');
   release();
   assert.equal((await result).costUsd, 0.00002);
   assert.equal(fields.openai.cost.textContent, '$0.00002000');
   assert.equal(fields.openai.tokens.textContent, '22');
+  assert.equal(fields.openai.model.textContent, '0.020 s');
+  assert.equal(fields.openai.avg.textContent, '0.010 s');
 });
 
 test('missing usage prevents a partial total and ratio even if later calls report cost', async () => {
