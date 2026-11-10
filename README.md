@@ -86,8 +86,46 @@ The response's `answers.category.choice` is mapped back to the label name.
 
 Both sides run at the same time, and each side processes its items one call at a time.
 
+## How cost is estimated
+
+Each panel totals API-reported tokens and shows an estimated USD cost for completed
+responses. Once both sides complete, the app compares their total costs and speeds.
+
+The snapshot in `pricing.py` was verified on **November 6, 2026** against
+[Azure OpenAI pricing](https://azure.microsoft.com/en-us/pricing/details/azure-openai/)
+and the [Azure Retail Prices API](https://prices.azure.com/api/retail/prices).
+Rates are USD per **1 million tokens**:
+
+| Model / pricing assumption | Input | Cached input | Cache writes | Output |
+| --- | --- | --- | --- | --- |
+| GPT-6.1 Sol, Global Standard, short context | $2.00 | $0.10 | $2.50 | $10.00 |
+| Microsoft-Decision-1, standard token meter | $0.042 | N/A | N/A | $0.042 |
+
+LLM cached-input and cache-write tokens are removed from ordinary input before
+their separate rates are applied. Output usage already includes reasoning tokens;
+these are not counted twice. Decision's single token rate is applied to reported
+input plus output tokens. Prices are selected using the response's actual model
+identifier, not an arbitrary deployment name.
+
+These are **estimates, not billing totals**. Deployment type, region, long context,
+and negotiated discounts can change prices. Failed, retried, or stopped requests
+can incur charges not captured by completed responses. Prices are a dated snapshot,
+not automatically refreshed; update them or set the optional USD-per-million
+overrides in `.env.example` to match your deployment. For the LLM, set input and
+output overrides together; also set cached-input/cache-write rates if those token
+categories are used.
+
+Mock runs, unknown models without overrides, and missing or invalid usage show
+**Unavailable**, never a fabricated zero or partial cost comparison.
+
 ## Tests
 
 ```bash
 python -m pytest
+```
+
+UI behavior tests (requires Node.js):
+
+```bash
+node --test tests/test_ui.cjs
 ```

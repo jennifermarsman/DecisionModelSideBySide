@@ -13,6 +13,8 @@ import time
 
 import requests
 
+from pricing import estimate_cost, mock_cost
+
 DECISION_PATH = "/providers/microsoft/v1/systemone"
 DECISION_TOKEN_SCOPE = "https://cognitiveservices.azure.com/.default"
 QUESTION_NAME = "category"
@@ -127,14 +129,25 @@ def classify_openai(text, labels):
     start = time.perf_counter()
     if client is None:
         label = _mock(text, labels)
+        cost = mock_cost()
     else:
         resp = client.chat.completions.create(
             model=_env("AZURE_OPENAI_DEPLOYMENT"),
             messages=messages,
         )
         label = match_label(resp.choices[0].message.content, labels)
+        usage = getattr(resp, "usage", None)
+        if usage is not None:
+            details = getattr(usage, "prompt_tokens_details", None)
+            usage = {
+                "input_tokens": usage.prompt_tokens,
+                "output_tokens": usage.completion_tokens,
+                "cached_input_tokens": getattr(details, "cached_tokens", 0) or 0,
+                "cache_write_tokens": getattr(details, "cache_write_tokens", 0) or 0,
+            }
+        cost = estimate_cost("openai", getattr(resp, "model", None), usage)
     model_ms = (time.perf_counter() - start) * 1000
-    return {"label": label, "prompt": prompt, "model_ms": model_ms}
+    return {"label": label, "prompt": prompt, "model_ms": model_ms, **cost}
 
 
 @functools.lru_cache(maxsize=1)
@@ -177,6 +190,7 @@ def classify_decision(text, labels):
     start = time.perf_counter()
     if headers is None:
         label = _mock(text, labels)
+        cost = mock_cost()
     else:
         url = _env("DECISION_ENDPOINT").rstrip("/") + DECISION_PATH
         resp = _session.post(
@@ -186,9 +200,11 @@ def classify_decision(text, labels):
             timeout=60,
         )
         resp.raise_for_status()
-        label, confidence = parse_decision_response(resp.json(), keys)
+        data = resp.json()
+        label, confidence = parse_decision_response(data, keys)
+        cost = estimate_cost("decision", data.get("model"), data.get("usage"))
     model_ms = (time.perf_counter() - start) * 1000
-    return {"label": label, "prompt": prompt, "model_ms": model_ms, "confidence": confidence}
+    return {"label": label, "prompt": prompt, "model_ms": model_ms, "confidence": confidence, **cost}
 
 
 CLASSIFIERS = {"openai": classify_openai, "decision": classify_decision}

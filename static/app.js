@@ -15,6 +15,7 @@ const field = (model, name) => $(`[data-field="${name}"]`, panels[model]);
 
 // All times are displayed in seconds so they are directly comparable.
 const fmt = (ms) => `${(ms / 1000).toFixed(3)} s`;
+const money = (usd) => `$${usd.toFixed(8)}`;
 
 async function init() {
   state.config = await (await fetch('/api/config')).json();
@@ -79,6 +80,10 @@ function resetPanels() {
     field(model, 'calls').textContent = '0';
     field(model, 'model').textContent = fmt(0);
     field(model, 'avg').textContent = fmt(0);
+    field(model, 'cost').textContent = money(0);
+    field(model, 'tokens').textContent = '0';
+    field(model, 'pricing').textContent = 'USD estimates; rates shown after the first response.';
+    field(model, 'relative-cost').textContent = '';
     field(model, 'bar').style.width = '0';
     field(model, 'completion').textContent = '';
     field(model, 'relative').textContent = '';
@@ -137,6 +142,11 @@ async function runSide(model, items, labels, signal, prompts) {
   const start = performance.now();
   let calls = 0;
   let modelMs = 0;
+  let costUsd = 0;
+  let tokens = 0;
+  let costAvailable = true;
+  let costUnavailableReason = '';
+  let usageAvailable = true;
   let done = false;
   const tick = () => {
     if (done) return;
@@ -167,6 +177,30 @@ async function runSide(model, items, labels, signal, prompts) {
       field(model, 'calls').textContent = String(calls);
       field(model, 'model').textContent = fmt(modelMs);
       field(model, 'avg').textContent = fmt(modelMs / calls);
+      if (Number.isFinite(data.cost_usd) && data.cost_usd >= 0) {
+        costUsd += data.cost_usd;
+      } else {
+        costAvailable = false;
+        costUnavailableReason ||= data.cost_unavailable_reason || 'Token usage or pricing unavailable.';
+      }
+      if (data.usage && [data.usage.input_tokens, data.usage.output_tokens]
+        .every((count) => Number.isInteger(count) && count >= 0)) {
+        tokens += data.usage.input_tokens + data.usage.output_tokens;
+      } else {
+        usageAvailable = false;
+      }
+      field(model, 'cost').textContent = costAvailable ? money(costUsd) : 'Unavailable';
+      field(model, 'tokens').textContent = usageAvailable ? tokens.toLocaleString() : 'Unavailable';
+      const pricing = data.pricing;
+      field(model, 'pricing').textContent = pricing
+        ? `${pricing.basis}: $${pricing.input}/1M input, $${pricing.output}/1M output`
+          + (pricing.cached_input !== undefined ? `, $${pricing.cached_input}/1M cached input` : '')
+          + (pricing.cache_write !== undefined ? `, $${pricing.cache_write}/1M cache writes` : '')
+          + (pricing.checked_on ? `. Verified ${pricing.checked_on}.` : '.')
+        : data.cost_unavailable_reason || 'Token usage or pricing unavailable.';
+      if (!costAvailable) {
+        field(model, 'pricing').textContent += ` Total unavailable: ${costUnavailableReason}`;
+      }
       field(model, 'bar').style.width = `${(100 * calls) / items.length}%`;
       addResult(model, text, data.label, data.model_ms, false);
     }
@@ -182,7 +216,7 @@ async function runSide(model, items, labels, signal, prompts) {
   field(model, 'wall').textContent = fmt(wallMs);
   const complete = calls === items.length;
   if (complete) field(model, 'completion').textContent = 'Done';
-  return { model, wallMs, complete };
+  return { model, wallMs, complete, costUsd: costAvailable && calls > 0 ? costUsd : null };
 }
 
 function addResult(model, text, label, ms, isError) {
@@ -214,6 +248,27 @@ function showRelative(results) {
   const diff = fmt(slow.wallMs - fast.wallMs);
   field(fast.model, 'relative').textContent = `Finished first: ${ratio}× faster (${diff} less wall clock time)`;
   field(slow.model, 'relative').textContent = `Finished second: ${ratio}× slower (${diff} more wall clock time)`;
+  if (![a.costUsd, b.costUsd].every((cost) => Number.isFinite(cost) && cost >= 0)) {
+    for (const result of results) {
+      field(result.model, 'relative-cost').textContent = 'Cost comparison unavailable: usage or pricing is missing.';
+    }
+    return;
+  }
+  if (a.costUsd === b.costUsd) {
+    for (const result of results) {
+      field(result.model, 'relative-cost').textContent = 'Same estimated cost.';
+    }
+    return;
+  }
+  const [cheaper, dearer] = a.costUsd < b.costUsd ? [a, b] : [b, a];
+  const savings = money(dearer.costUsd - cheaper.costUsd);
+  const costRatio = cheaper.costUsd > 0 ? (dearer.costUsd / cheaper.costUsd).toFixed(2) : null;
+  field(cheaper.model, 'relative-cost').textContent = costRatio
+    ? `Estimated cost: ${costRatio}× lower (${savings} less)`
+    : `Lower estimated cost (${savings} less)`;
+  field(dearer.model, 'relative-cost').textContent = costRatio
+    ? `Estimated cost: ${costRatio}× higher (${savings} more)`
+    : `Higher estimated cost (${savings} more)`;
 }
 
 init();

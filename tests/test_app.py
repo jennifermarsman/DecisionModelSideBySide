@@ -76,7 +76,13 @@ def test_classify_openai_uses_model_default_temperature(monkeypatch, client):
         assert "temperature" not in kwargs
         calls.append(kwargs)
         return SimpleNamespace(
-            choices=[SimpleNamespace(message=SimpleNamespace(content="Technical Support"))]
+            choices=[SimpleNamespace(message=SimpleNamespace(content="Technical Support"))],
+            model="gpt-6.1-sol-2026-09-29",
+            usage=SimpleNamespace(
+                prompt_tokens=100,
+                completion_tokens=25,
+                prompt_tokens_details=SimpleNamespace(cached_tokens=20, cache_write_tokens=0),
+            ),
         )
 
     fake_client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=fake_create)))
@@ -86,6 +92,9 @@ def test_classify_openai_uses_model_default_temperature(monkeypatch, client):
     assert resp.status_code == 200
     assert data["label"] == "Technical Support"
     assert data["model_ms"] >= 0
+    assert data["usage"]["input_tokens"] == 100
+    assert data["usage"]["output_tokens"] == 25
+    assert data["cost_usd"] == pytest.approx((80 * 2 + 20 * 0.1 + 25 * 10) / 1_000_000)
     assert "Respond with only the label name" in data["prompt"]
     assert calls == [{
         "model": "my-reasoning-deployment",
@@ -127,7 +136,11 @@ def test_classify_decision_calls_endpoint(monkeypatch, client):
             pass
 
         def json(self):
-            return {"answers": {"category": {"choice": "sales_new_purchase", "confidence": 0.8}}}
+            return {
+                "answers": {"category": {"choice": "sales_new_purchase", "confidence": 0.8}},
+                "model": "microsoft-decision-1",
+                "usage": {"input_tokens": 100, "output_tokens": 1},
+            }
 
     def fake_post(url, headers, json, timeout):
         calls.append((url, headers))
@@ -139,6 +152,8 @@ def test_classify_decision_calls_endpoint(monkeypatch, client):
     assert resp.status_code == 200
     assert data["label"] == "Sales - New Purchase"
     assert data["model_ms"] >= 0
+    assert data["usage"] == {"input_tokens": 100, "output_tokens": 1}
+    assert data["cost_usd"] == pytest.approx(101 * 0.042 / 1_000_000)
     assert calls[0][0] == "https://example.services.ai.azure.com/providers/microsoft/v1/systemone"
     assert calls[0][1]["api-key"] == "test-key"
 
@@ -151,6 +166,8 @@ def test_classify_validation_and_mock(monkeypatch, client):
     data = client.post("/api/classify/openai", json={"text": "Needs help", "labels": LABELS}).get_json()
     assert data["label"] in {l["name"] for l in LABELS}
     assert "Respond with only the label name" in data["prompt"]
+    assert data["cost_usd"] is None
+    assert "Mock" in data["cost_unavailable_reason"]
 
 
 def test_missing_configuration_is_reported(monkeypatch, client):

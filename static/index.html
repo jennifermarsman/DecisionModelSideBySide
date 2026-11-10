@@ -9,7 +9,7 @@
 <body>
   <header>
     <h1>Decision Model Side-by-Side</h1>
-    <p>Classify the same data in parallel with a general-purpose large language model and Microsoft-Decision-1, and compare their labels and speed.</p>
+    <p>Classify the same data in parallel with a general-purpose large language model and Microsoft-Decision-1, and compare their labels, speed, and estimated cost.</p>
   </header>
 
   <section class="controls">
@@ -40,9 +40,15 @@
         <div><span class="stat" data-field="model">0.000 s</span><small>Model time</small></div>
         <div><span class="stat" data-field="avg">0.000 s</span><small>Avg per call</small></div>
       </div>
+      <div class="stats cost-stats">
+        <div><span class="stat" data-field="cost">$0.00000000</span><small>Estimated cost (USD)</small></div>
+        <div><span class="stat" data-field="tokens">0</span><small>Reported tokens</small></div>
+      </div>
+      <p class="pricing muted" data-field="pricing">USD estimates; rates shown after the first response.</p>
       <div class="progress"><div data-field="bar"></div></div>
       <p class="completion" data-field="completion" role="status"></p>
       <p class="relative" data-field="relative"></p>
+      <p class="relative" data-field="relative-cost"></p>
       <details open>
         <summary>Request being executed</summary>
         <pre data-field="prompt" class="muted">Press Run to start.</pre>
@@ -58,9 +64,15 @@
         <div><span class="stat" data-field="model">0.000 s</span><small>Model time</small></div>
         <div><span class="stat" data-field="avg">0.000 s</span><small>Avg per call</small></div>
       </div>
+      <div class="stats cost-stats">
+        <div><span class="stat" data-field="cost">$0.00000000</span><small>Estimated cost (USD)</small></div>
+        <div><span class="stat" data-field="tokens">0</span><small>Reported tokens</small></div>
+      </div>
+      <p class="pricing muted" data-field="pricing">USD estimates; rates shown after the first response.</p>
       <div class="progress"><div data-field="bar"></div></div>
       <p class="completion" data-field="completion" role="status"></p>
       <p class="relative" data-field="relative"></p>
+      <p class="relative" data-field="relative-cost"></p>
       <details open>
         <summary>Request being executed</summary>
         <pre data-field="prompt" class="muted">Press Run to start.</pre>
@@ -68,6 +80,14 @@
       <ol class="results" data-field="results"></ol>
     </section>
   </main>
+
+  <footer class="cost-note muted">
+    Cost estimates use reported tokens for completed responses, not your Azure bill.
+    Published USD rates verified November 6, 2026; the LLM snapshot assumes Global Standard short context.
+    Deployment type, region, and your agreement may change prices. Failed or stopped calls may incur additional charges.
+    Sources: <a href="https://azure.microsoft.com/en-us/pricing/details/azure-openai/" target="_blank" rel="noopener noreferrer">Azure OpenAI pricing</a>
+    and <a href="https://prices.azure.com/api/retail/prices" target="_blank" rel="noopener noreferrer">Azure retail prices</a>.
+  </footer>
 
   <script src="/static/app.js"></script>
 </body>
