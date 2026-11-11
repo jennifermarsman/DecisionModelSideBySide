@@ -46,6 +46,24 @@ function setup(fetch) {
 }
 
 for (const model of ['openai', 'decision']) {
+  test(`${model} displays average call time in milliseconds and clears on reset`, async () => {
+    let calls = 0;
+    const { context, fields } = setup(async () => ({
+      ok: true,
+      json: async () => ({
+        label: 'Support', model_ms: ++calls === 1 ? 10 : 25,
+      }),
+    }));
+    assert.equal(fields[model].avg.textContent, '0.000 ms');
+    await vm.runInContext(
+      `runSide('${model}', ['first', 'second'], [], { aborted: false }, prompts)`, context,
+    );
+    assert.equal(fields[model].avg.textContent, '17.500 ms');
+    assert.equal(fields[model].model.textContent, '0.035 s');
+    vm.runInContext('resetPanels()', context);
+    assert.equal(fields[model].avg.textContent, '0.000 ms');
+  });
+
   test(`${model} shows Done only after its last sample and clears on reset`, async () => {
     let release;
     let calls = 0;
@@ -143,13 +161,13 @@ test('cost totals aggregate completed responses, not pending calls', async () =>
   assert.equal(fields.openai.cost.textContent, '$0.00001000');
   assert.equal(fields.openai.tokens.textContent, '11');
   assert.equal(fields.openai.model.textContent, '0.010 s');
-  assert.equal(fields.openai.avg.textContent, '0.010 s');
+  assert.equal(fields.openai.avg.textContent, '10.000 ms');
   release();
   assert.equal((await result).costUsd, 0.00002);
   assert.equal(fields.openai.cost.textContent, '$0.00002000');
   assert.equal(fields.openai.tokens.textContent, '22');
   assert.equal(fields.openai.model.textContent, '0.020 s');
-  assert.equal(fields.openai.avg.textContent, '0.010 s');
+  assert.equal(fields.openai.avg.textContent, '10.000 ms');
 });
 
 test('missing usage prevents a partial total and ratio even if later calls report cost', async () => {
