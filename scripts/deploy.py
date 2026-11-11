@@ -136,10 +136,12 @@ def main():
         f"{registry['loginServer']}/{tag}", settings,
     )
     # Secrets go via a mode-0600 temporary file, not CLI arguments or build context.
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".json") as handle:
-        json.dump(config, handle)
-        handle.flush()
-        az("containerapp", "create", "-g", group, "-n", args.name, "--yaml", handle.name, output=False)
+    with tempfile.TemporaryDirectory(prefix="decision-config-") as directory:
+        config_path = Path(directory) / "config.json"
+        with config_path.open("w") as handle:
+            config_path.chmod(0o600)
+            json.dump(config, handle)
+        az("containerapp", "create", "-g", group, "-n", args.name, "--yaml", str(config_path), output=False)
     deployed = az("containerapp", "show", "-g", group, "-n", args.name)
     url = "https://" + deployed["properties"]["configuration"]["ingress"]["fqdn"]
     last_error = None
