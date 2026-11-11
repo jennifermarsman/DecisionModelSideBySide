@@ -1,0 +1,12 @@
+**
+!Dockerfile
+!.dockerignore
+!requirements.txt
+!app.py
+!classifiers.py
+!pricing.py
+!scenarios.py
+!static/
+!static/**
+!data/
+!data/**
