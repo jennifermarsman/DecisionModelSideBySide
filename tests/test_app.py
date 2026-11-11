@@ -63,6 +63,30 @@ def test_request_previews_validate_labels(client, body):
     assert client.post("/api/data/expenses", json=body).status_code == 400
 
 
+@pytest.mark.parametrize("endpoint", ["/api/data/expenses", "/api/classify/openai", "/api/run/openai/expenses"])
+@pytest.mark.parametrize("limit", ["count", "name", "description"])
+def test_endpoints_reject_excessive_labels(client, endpoint, limit):
+    labels = LABELS
+    if limit == "count":
+        labels = LABELS * 34
+    elif limit == "name":
+        labels = [{"name": "x" * (app_module.MAX_LABEL_NAME_LENGTH + 1)}]
+    else:
+        labels = [{"name": "valid", "description": "x" * (app_module.MAX_LABEL_DESCRIPTION_LENGTH + 1)}]
+    body = {"labels": labels}
+    if endpoint == "/api/classify/openai":
+        body["text"] = "Example"
+    response = client.post(endpoint, json=body)
+    assert response.status_code == 400
+
+
+def test_request_body_size_is_limited(client):
+    body = '{"text":"' + ("x" * app_module.MAX_REQUEST_BYTES) + '","labels":[]}'
+    response = client.post("/api/classify/openai", data=body, content_type="application/json")
+    assert response.status_code == 413
+    assert "must not exceed" in response.get_json()["error"]
+
+
 def test_match_label():
     assert classifiers.match_label("technical support.", LABELS) == "Technical Support"
     assert classifiers.match_label("Label: Other", LABELS) == "Other"
@@ -276,6 +300,47 @@ def test_batch_disconnect_stops_after_inflight_call(monkeypatch, client):
         threads[0].join(timeout=2)
     assert not threads[0].is_alive()
     assert calls == ["first"]
+
+
+def test_batch_admission_preserves_health_capacity_and_releases_slot(monkeypatch, client):
+    monkeypatch.setenv("MOCK_MODELS", "true")
+    slots = threading.BoundedSemaphore(1)
+    monkeypatch.setattr(app_module, "_batch_slots", slots)
+    monkeypatch.setattr(app_module, "load_data", lambda path: ["first"])
+    entered = threading.Event()
+    release = threading.Event()
+
+    def classify(text, labels):
+        entered.set()
+        assert release.wait(timeout=2)
+        return {"label": labels[0]["name"], "model_ms": 5}
+
+    monkeypatch.setitem(app_module.CLASSIFIERS, "openai", classify)
+    assert app_module.MAX_CONCURRENT_BATCHES < 8
+    response = client.post(
+        "/api/run/openai/expenses", json={"labels": LABELS}, buffered=False,
+    )
+    assert json.loads(next(response.response))["type"] == "calling"
+    assert entered.wait(timeout=2)
+
+    rejected = client.post("/api/run/openai/expenses", json={"labels": LABELS})
+    assert rejected.status_code == 429
+    assert rejected.headers["Retry-After"] == "5"
+    assert client.get("/healthz").status_code == 200
+
+    response.close()
+    release.set()
+    assert slots.acquire(timeout=2)
+    slots.release()
+
+    accepted = client.post(
+        "/api/run/openai/expenses", json={"labels": LABELS}, buffered=False,
+    )
+    events = [json.loads(line) for line in accepted.response]
+    accepted.close()
+    assert events[-1]["type"] == "done"
+    assert slots.acquire(timeout=2)
+    slots.release()
 
 
 @pytest.mark.parametrize("body", [[], {}, {"labels": "invalid"}, {"labels": []}, {"labels": [{}]}])

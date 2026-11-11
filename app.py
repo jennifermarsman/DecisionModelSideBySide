@@ -22,11 +22,23 @@ from classifiers import (  # noqa: E402
 from scenarios import SCENARIOS, load_data  # noqa: E402
 
 app = Flask(__name__, static_folder="static", static_url_path="/static")
+MAX_REQUEST_BYTES = 64 * 1024
+MAX_LABELS = 100
+MAX_LABEL_NAME_LENGTH = 100
+MAX_LABEL_DESCRIPTION_LENGTH = 1000
+MAX_CONCURRENT_BATCHES = 4
+app.config["MAX_CONTENT_LENGTH"] = MAX_REQUEST_BYTES
+_batch_slots = threading.BoundedSemaphore(MAX_CONCURRENT_BATCHES)
 
 
 @app.get("/healthz")
 def health():
     return jsonify({"status": "ok"})
+
+
+@app.errorhandler(413)
+def request_too_large(_error):
+    return jsonify({"error": f"Request body must not exceed {MAX_REQUEST_BYTES} bytes."}), 413
 
 
 @app.get("/")
@@ -57,6 +69,24 @@ def normalize_labels(labels):
     ]
 
 
+def validate_labels(raw_labels):
+    if not isinstance(raw_labels, list):
+        return None, "'labels' must be an array."
+    if len(raw_labels) > MAX_LABELS:
+        return None, f"At most {MAX_LABELS} labels are allowed."
+    for label in raw_labels:
+        if not isinstance(label, dict):
+            continue
+        if len(str(label.get("name", ""))) > MAX_LABEL_NAME_LENGTH:
+            return None, f"Label names must not exceed {MAX_LABEL_NAME_LENGTH} characters."
+        if len(str(label.get("description", ""))) > MAX_LABEL_DESCRIPTION_LENGTH:
+            return None, f"Label descriptions must not exceed {MAX_LABEL_DESCRIPTION_LENGTH} characters."
+    labels = normalize_labels(raw_labels)
+    if not labels:
+        return None, "At least one label is required."
+    return labels, None
+
+
 @app.route("/api/data/<scenario>", methods=["GET", "POST"])
 def data(scenario):
     if scenario not in SCENARIOS:
@@ -67,11 +97,9 @@ def data(scenario):
     body = request.get_json(silent=True)
     if not isinstance(body, dict):
         return jsonify({"error": "The request body must be a JSON object."}), 400
-    if not isinstance(body.get("labels", []), list):
-        return jsonify({"error": "'labels' must be an array."}), 400
-    labels = normalize_labels(body.get("labels"))
-    if not labels:
-        return jsonify({"error": "At least one label is required."}), 400
+    labels, error = validate_labels(body.get("labels", []))
+    if error:
+        return jsonify({"error": error}), 400
     prompts = [
         {
             "openai": format_openai_prompt(build_openai_messages(text, labels)),
@@ -89,10 +117,10 @@ def classify(model):
     body = request.get_json(silent=True)
     if not isinstance(body, dict):
         return jsonify({"error": "The request body must be a JSON object."}), 400
-    if not isinstance(body.get("labels", []), list):
-        return jsonify({"error": "'labels' must be an array."}), 400
     text = str(body.get("text", "")).strip()
-    labels = normalize_labels(body.get("labels"))
+    labels, error = validate_labels(body.get("labels", []))
+    if error:
+        return jsonify({"error": error}), 400
     if not text or not labels:
         return jsonify({"error": "Both 'text' and at least one label are required."}), 400
     missing = missing_settings(model)
@@ -114,13 +142,15 @@ def run_batch(model, scenario):
     body = request.get_json(silent=True)
     if not isinstance(body, dict) or not isinstance(body.get("labels"), list):
         return jsonify({"error": "'labels' must be an array in a JSON object."}), 400
-    labels = normalize_labels(body["labels"])
-    if not labels:
-        return jsonify({"error": "At least one label is required."}), 400
+    labels, error = validate_labels(body["labels"])
+    if error:
+        return jsonify({"error": error}), 400
     missing = missing_settings(model)
     if missing:
         return jsonify({"error": f"Missing configuration: set {', '.join(missing)}."}), 500
     items = load_data(SCENARIOS[scenario]["data_file"])
+    if not _batch_slots.acquire(blocking=False):
+        return jsonify({"error": "Too many batches are running. Retry shortly."}), 429, {"Retry-After": "5"}
     events = queue.SimpleQueue()
     cancelled = threading.Event()
 
@@ -148,11 +178,9 @@ def run_batch(model, scenario):
             events.put({"type": "error", "error": "Model call failed. See the server logs for details."})
         finally:
             events.put(None)
+            _batch_slots.release()
 
     def stream():
-        # A separate producer keeps browser/network backpressure out of the batch timer.
-        worker = threading.Thread(target=execute, daemon=True)
-        worker.start()
         try:
             while True:
                 try:
@@ -166,10 +194,19 @@ def run_batch(model, scenario):
             # An in-flight model request may finish, but no new calls start after disconnect.
             cancelled.set()
 
-    return Response(
+    # Start immediately so the admitted slot is always owned by a running producer.
+    worker = threading.Thread(target=execute, daemon=True)
+    try:
+        worker.start()
+    except Exception:
+        _batch_slots.release()
+        raise
+    response = Response(
         stream(), mimetype="application/x-ndjson",
         headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"},
     )
+    response.call_on_close(cancelled.set)
+    return response
 
 
 if __name__ == "__main__":
