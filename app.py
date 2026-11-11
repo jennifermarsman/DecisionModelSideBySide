@@ -126,6 +126,8 @@ def classify(model):
     missing = missing_settings(model)
     if missing:
         return jsonify({"error": f"Missing configuration: set {', '.join(missing)} in your .env file."}), 500
+    if not _batch_slots.acquire(blocking=False):
+        return jsonify({"error": "Too many model requests are running. Retry shortly."}), 429, {"Retry-After": "5"}
     try:
         return jsonify(CLASSIFIERS[model](text, labels))
     except Exception as exc:  # details go to the server log, not the browser
@@ -133,6 +135,8 @@ def classify(model):
         status = getattr(exc, "status_code", None) or getattr(getattr(exc, "response", None), "status_code", None)
         detail = f" (HTTP {int(status)})" if isinstance(status, int) else ""
         return jsonify({"error": f"Model call failed{detail}. See the server console for details."}), 502
+    finally:
+        _batch_slots.release()
 
 
 @app.post("/api/run/<model>/<scenario>")
@@ -153,6 +157,21 @@ def run_batch(model, scenario):
         return jsonify({"error": "Too many batches are running. Retry shortly."}), 429, {"Retry-After": "5"}
     events = queue.SimpleQueue()
     cancelled = threading.Event()
+    completion_lock = threading.Lock()
+    pending = {"producer", "stream"}
+
+    def finish(part):
+        # A disconnected stream and its in-flight producer can finish in either order.
+        with completion_lock:
+            if part not in pending:
+                return
+            pending.remove(part)
+            if not pending:
+                _batch_slots.release()
+
+    def close_stream():
+        cancelled.set()
+        finish("stream")
 
     def execute():
         start = time.perf_counter()
@@ -178,7 +197,7 @@ def run_batch(model, scenario):
             events.put({"type": "error", "error": "Model call failed. See the server logs for details."})
         finally:
             events.put(None)
-            _batch_slots.release()
+            finish("producer")
 
     def stream():
         try:
@@ -192,20 +211,21 @@ def run_batch(model, scenario):
                 yield json.dumps(event) + "\n"
         finally:
             # An in-flight model request may finish, but no new calls start after disconnect.
-            cancelled.set()
+            close_stream()
 
     # Start immediately so the admitted slot is always owned by a running producer.
-    worker = threading.Thread(target=execute, daemon=True)
     try:
+        worker = threading.Thread(target=execute, daemon=True)
         worker.start()
     except Exception:
-        _batch_slots.release()
+        finish("producer")
+        close_stream()
         raise
     response = Response(
         stream(), mimetype="application/x-ndjson",
         headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"},
     )
-    response.call_on_close(cancelled.set)
+    response.call_on_close(close_stream)
     return response
 
 

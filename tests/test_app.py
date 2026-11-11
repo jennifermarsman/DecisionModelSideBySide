@@ -1,5 +1,6 @@
 import json
 import threading
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -316,7 +317,9 @@ def test_batch_admission_preserves_health_capacity_and_releases_slot(monkeypatch
         return {"label": labels[0]["name"], "model_ms": 5}
 
     monkeypatch.setitem(app_module.CLASSIFIERS, "openai", classify)
-    assert app_module.MAX_CONCURRENT_BATCHES < 8
+    dockerfile = Path(app_module.__file__).with_name("Dockerfile").read_text()
+    command = json.loads(next(line[4:] for line in dockerfile.splitlines() if line.startswith("CMD ")))
+    assert app_module.MAX_CONCURRENT_BATCHES < int(command[command.index("--threads") + 1])
     response = client.post(
         "/api/run/openai/expenses", json={"labels": LABELS}, buffered=False,
     )
@@ -326,9 +329,13 @@ def test_batch_admission_preserves_health_capacity_and_releases_slot(monkeypatch
     rejected = client.post("/api/run/openai/expenses", json={"labels": LABELS})
     assert rejected.status_code == 429
     assert rejected.headers["Retry-After"] == "5"
+    rejected = client.post("/api/classify/openai", json={"text": "first", "labels": LABELS})
+    assert rejected.status_code == 429
+    assert rejected.headers["Retry-After"] == "5"
     assert client.get("/healthz").status_code == 200
 
     response.close()
+    assert not slots.acquire(blocking=False)
     release.set()
     assert slots.acquire(timeout=2)
     slots.release()
@@ -340,6 +347,114 @@ def test_batch_admission_preserves_health_capacity_and_releases_slot(monkeypatch
     accepted.close()
     assert events[-1]["type"] == "done"
     assert slots.acquire(timeout=2)
+    slots.release()
+
+
+@pytest.mark.parametrize("fails", [False, True])
+def test_classify_shares_capacity_and_releases_on_completion(monkeypatch, client, fails):
+    monkeypatch.setenv("MOCK_MODELS", "true")
+    slots = threading.BoundedSemaphore(1)
+    monkeypatch.setattr(app_module, "_batch_slots", slots)
+    calls = []
+
+    def classify(text, labels):
+        calls.append(text)
+        assert not slots.acquire(blocking=False)
+        with app.test_client() as other_client:
+            for endpoint in ("/api/classify/decision", "/api/run/decision/expenses"):
+                rejected = other_client.post(endpoint, json={"text": text, "labels": labels})
+                assert rejected.status_code == 429
+                assert rejected.headers["Retry-After"] == "5"
+            assert other_client.get("/healthz").status_code == 200
+        if fails:
+            raise RuntimeError("upstream failure")
+        return {"label": "Other"}
+
+    monkeypatch.setitem(app_module.CLASSIFIERS, "openai", classify)
+    response = client.post("/api/classify/openai", json={"text": "first", "labels": LABELS})
+    assert response.status_code == (502 if fails else 200)
+    assert calls == ["first"]
+    assert slots.acquire(blocking=False)
+    slots.release()
+
+
+@pytest.mark.parametrize("fails", [False, True])
+@pytest.mark.parametrize("drain", [False, True])
+def test_finished_producer_holds_slot_until_stream_finishes(monkeypatch, client, fails, drain):
+    monkeypatch.setenv("MOCK_MODELS", "true")
+    slots = threading.BoundedSemaphore(1)
+    monkeypatch.setattr(app_module, "_batch_slots", slots)
+    monkeypatch.setattr(app_module, "load_data", lambda path: ["first"])
+    threads = []
+    real_thread = threading.Thread
+
+    def create_thread(*args, **kwargs):
+        thread = real_thread(*args, **kwargs)
+        threads.append(thread)
+        return thread
+
+    def classify(text, labels):
+        if fails:
+            raise RuntimeError("upstream failure")
+        return {"label": "Other"}
+
+    monkeypatch.setattr(app_module.threading, "Thread", create_thread)
+    monkeypatch.setitem(app_module.CLASSIFIERS, "openai", classify)
+    response = client.post("/api/run/openai/expenses", json={"labels": LABELS}, buffered=False)
+    try:
+        threads[0].join(timeout=2)
+        assert not threads[0].is_alive()
+        assert not slots.acquire(blocking=False)
+        for endpoint in ("/api/run/openai/expenses", "/api/classify/openai"):
+            rejected = client.post(endpoint, json={"text": "first", "labels": LABELS})
+            assert rejected.status_code == 429
+        assert client.get("/healthz").status_code == 200
+        if drain:
+            events = [json.loads(line) for line in response.response]
+            assert events[-1]["type"] == ("error" if fails else "done")
+            assert slots.acquire(blocking=False)
+            slots.release()
+    finally:
+        response.close()
+    response.close()
+    assert slots.acquire(blocking=False)
+    assert not slots.acquire(blocking=False)
+    slots.release()
+
+
+def test_batch_close_before_iteration_releases_capacity(monkeypatch):
+    monkeypatch.setenv("MOCK_MODELS", "true")
+    slots = threading.BoundedSemaphore(1)
+    monkeypatch.setattr(app_module, "_batch_slots", slots)
+    monkeypatch.setattr(app_module, "load_data", lambda path: [])
+    monkeypatch.setattr(
+        app_module.threading, "Thread", lambda target, daemon: SimpleNamespace(start=target),
+    )
+    with app.test_request_context("/api/run/openai/expenses", method="POST", json={"labels": LABELS}):
+        response = app.full_dispatch_request()
+    assert not slots.acquire(blocking=False)
+    response.close()
+    response.close()
+    assert slots.acquire(blocking=False)
+    slots.release()
+
+
+@pytest.mark.parametrize("stage", ["create", "start"])
+def test_batch_thread_failure_releases_capacity(monkeypatch, client, stage):
+    monkeypatch.setenv("MOCK_MODELS", "true")
+    slots = threading.BoundedSemaphore(1)
+    monkeypatch.setattr(app_module, "_batch_slots", slots)
+
+    def fail(*args, **kwargs):
+        raise RuntimeError("cannot start thread")
+
+    if stage == "create":
+        monkeypatch.setattr(app_module.threading, "Thread", fail)
+    else:
+        monkeypatch.setattr(app_module.threading.Thread, "start", fail)
+    with pytest.raises(RuntimeError, match="cannot start thread"):
+        client.post("/api/run/openai/expenses", json={"labels": LABELS})
+    assert slots.acquire(blocking=False)
     slots.release()
 
 
