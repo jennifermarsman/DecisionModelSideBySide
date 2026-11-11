@@ -1,8 +1,11 @@
+import json
+import threading
 from types import SimpleNamespace
 
 import pytest
 
 import classifiers
+import app as app_module
 from app import app
 from scenarios import SCENARIOS, load_data
 
@@ -195,3 +198,96 @@ def test_decision_uses_entra_id_without_api_key(monkeypatch):
     headers = classifiers._decision_headers()
     assert headers["Authorization"] == "Bearer " + "entra-token"
     assert "api-key" not in headers
+
+
+@pytest.mark.parametrize("model", ["openai", "decision"])
+def test_batch_executes_without_waiting_for_browser_and_reports_server_time(monkeypatch, client, model):
+    monkeypatch.setenv("MOCK_MODELS", "true")
+    monkeypatch.setattr(app_module, "load_data", lambda path: ["first", "second"])
+    times = iter([10, 10.1, 10.25, 10.3])
+    monkeypatch.setattr(app_module.time, "perf_counter", lambda: next(times))
+    finished = threading.Event()
+    calls = []
+
+    def classify(text, labels):
+        calls.append(text)
+        if text == "second":
+            finished.set()
+        return {"label": labels[0]["name"], "model_ms": 5}
+
+    monkeypatch.setitem(app_module.CLASSIFIERS, model, classify)
+    response = client.post(
+        f"/api/run/{model}/expenses", json={"labels": LABELS}, buffered=False,
+    )
+    # Do not consume any more of the response: server-side calls must still finish.
+    assert finished.wait(timeout=2)
+    events = [json.loads(line) for line in response.data.splitlines()]
+    assert calls == ["first", "second"]
+    assert [event["type"] for event in events] == ["calling", "result", "calling", "result", "done"]
+    assert events[0]["prompt"]
+    assert events[1]["text"] == "first"
+    assert events[1]["total"] == 2
+    assert events[1]["wall_ms"] == pytest.approx(100)
+    assert events[3]["wall_ms"] == pytest.approx(250)
+    assert events[-1]["wall_ms"] == pytest.approx(300)
+
+
+def test_batch_failure_is_logged_and_never_reported_as_done(monkeypatch, client, caplog):
+    monkeypatch.setenv("MOCK_MODELS", "true")
+
+    def fail(text, labels):
+        raise RuntimeError("private upstream details")
+
+    monkeypatch.setitem(app_module.CLASSIFIERS, "openai", fail)
+    response = client.post("/api/run/openai/expenses", json={"labels": LABELS})
+    events = [json.loads(line) for line in response.data.splitlines()]
+    assert [event["type"] for event in events] == ["calling", "error"]
+    assert "private upstream details" not in response.get_data(as_text=True)
+    assert "Batch classification failed" in caplog.text
+
+
+def test_batch_disconnect_stops_after_inflight_call(monkeypatch, client):
+    monkeypatch.setenv("MOCK_MODELS", "true")
+    monkeypatch.setattr(app_module, "load_data", lambda path: ["first", "second"])
+    release = threading.Event()
+    threads = []
+    calls = []
+    real_thread = threading.Thread
+
+    def create_thread(*args, **kwargs):
+        thread = real_thread(*args, **kwargs)
+        threads.append(thread)
+        return thread
+
+    def classify(text, labels):
+        calls.append(text)
+        assert release.wait(timeout=2)
+        return {"label": "Other", "model_ms": 5}
+
+    monkeypatch.setattr(app_module.threading, "Thread", create_thread)
+    monkeypatch.setitem(app_module.CLASSIFIERS, "openai", classify)
+    response = client.post(
+        "/api/run/openai/expenses", json={"labels": LABELS}, buffered=False,
+    )
+    try:
+        response.close()
+    finally:
+        release.set()
+        threads[0].join(timeout=2)
+    assert not threads[0].is_alive()
+    assert calls == ["first"]
+
+
+@pytest.mark.parametrize("body", [[], {}, {"labels": "invalid"}, {"labels": []}, {"labels": [{}]}])
+def test_batch_validates_before_starting_stream(client, body):
+    assert client.post("/api/run/openai/expenses", json=body).status_code == 400
+
+
+def test_batch_checks_model_scenario_and_configuration(monkeypatch, client):
+    assert client.post("/api/run/other/expenses", json={"labels": LABELS}).status_code == 404
+    assert client.post("/api/run/openai/other", json={"labels": LABELS}).status_code == 404
+    monkeypatch.delenv("MOCK_MODELS", raising=False)
+    monkeypatch.delenv("DECISION_ENDPOINT", raising=False)
+    response = client.post("/api/run/decision/expenses", json={"labels": LABELS})
+    assert response.status_code == 500
+    assert "DECISION_ENDPOINT" in response.get_json()["error"]

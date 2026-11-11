@@ -2,9 +2,12 @@
 
 import json
 import os
+import queue
+import threading
+import time
 
 from dotenv import load_dotenv
-from flask import Flask, jsonify, request, send_from_directory
+from flask import Flask, Response, jsonify, request, send_from_directory
 
 load_dotenv()
 
@@ -19,6 +22,11 @@ from classifiers import (  # noqa: E402
 from scenarios import SCENARIOS, load_data  # noqa: E402
 
 app = Flask(__name__, static_folder="static", static_url_path="/static")
+
+
+@app.get("/healthz")
+def health():
+    return jsonify({"status": "ok"})
 
 
 @app.get("/")
@@ -97,6 +105,71 @@ def classify(model):
         status = getattr(exc, "status_code", None) or getattr(getattr(exc, "response", None), "status_code", None)
         detail = f" (HTTP {int(status)})" if isinstance(status, int) else ""
         return jsonify({"error": f"Model call failed{detail}. See the server console for details."}), 502
+
+
+@app.post("/api/run/<model>/<scenario>")
+def run_batch(model, scenario):
+    if model not in CLASSIFIERS or scenario not in SCENARIOS:
+        return jsonify({"error": "Unknown model or scenario"}), 404
+    body = request.get_json(silent=True)
+    if not isinstance(body, dict) or not isinstance(body.get("labels"), list):
+        return jsonify({"error": "'labels' must be an array in a JSON object."}), 400
+    labels = normalize_labels(body["labels"])
+    if not labels:
+        return jsonify({"error": "At least one label is required."}), 400
+    missing = missing_settings(model)
+    if missing:
+        return jsonify({"error": f"Missing configuration: set {', '.join(missing)}."}), 500
+    items = load_data(SCENARIOS[scenario]["data_file"])
+    events = queue.SimpleQueue()
+    cancelled = threading.Event()
+
+    def execute():
+        start = time.perf_counter()
+        try:
+            for index, text in enumerate(items):
+                if cancelled.is_set():
+                    return
+                prompt = (
+                    format_openai_prompt(build_openai_messages(text, labels))
+                    if model == "openai"
+                    else json.dumps(build_decision_request(text, labels)[0], indent=2)
+                )
+                events.put({"type": "calling", "prompt": prompt})
+                result = CLASSIFIERS[model](text, labels)
+                events.put({
+                    **result, "type": "result", "text": text,
+                    "wall_ms": (time.perf_counter() - start) * 1000,
+                    "total": len(items), "index": index,
+                })
+            events.put({"type": "done", "wall_ms": (time.perf_counter() - start) * 1000})
+        except Exception:
+            app.logger.exception("Batch classification failed")
+            events.put({"type": "error", "error": "Model call failed. See the server logs for details."})
+        finally:
+            events.put(None)
+
+    def stream():
+        # A separate producer keeps browser/network backpressure out of the batch timer.
+        worker = threading.Thread(target=execute, daemon=True)
+        worker.start()
+        try:
+            while True:
+                try:
+                    event = events.get(timeout=10)
+                except queue.Empty:
+                    event = {"type": "heartbeat"}
+                if event is None:
+                    break
+                yield json.dumps(event) + "\n"
+        finally:
+            # An in-flight model request may finish, but no new calls start after disconnect.
+            cancelled.set()
+
+    return Response(
+        stream(), mimetype="application/x-ndjson",
+        headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"},
+    )
 
 
 if __name__ == "__main__":

@@ -113,18 +113,9 @@ async function run() {
   const labels = state.labels.map((l) => ({ ...l }));
 
   try {
-    const resp = await fetch(`/api/data/${state.scenario}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ labels }),
-      signal,
-    });
-    const data = await resp.json();
-    if (!resp.ok) throw new Error(data.error || `HTTP ${resp.status}`);
-    const { items, prompts } = data;
     // Both models run at the same time; each side classifies its items one call at a time.
     const results = await Promise.all(
-      Object.keys(panels).map((model) => runSide(model, items, labels, signal, prompts)),
+      Object.keys(panels).map((model) => runSide(model, state.scenario, labels, signal)),
     );
     showRelative(results);
   } catch (err) {
@@ -138,40 +129,76 @@ function stop() {
   state.controller?.abort();
 }
 
-async function runSide(model, items, labels, signal, prompts) {
-  const start = performance.now();
+async function* readEvents(response) {
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let pending = '';
+  let ended = false;
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      pending += decoder.decode(value, { stream: !done });
+      let newline;
+      while ((newline = pending.indexOf('\n')) !== -1) {
+        const line = pending.slice(0, newline);
+        pending = pending.slice(newline + 1);
+        if (line.trim()) yield JSON.parse(line);
+      }
+      if (done) {
+        ended = true;
+        if (pending.trim()) throw new Error('Incomplete response from server.');
+        return;
+      }
+    }
+  } finally {
+    try {
+      if (!ended) await reader.cancel();
+    } finally {
+      reader.releaseLock();
+    }
+  }
+}
+
+async function runSide(model, scenario, labels, signal) {
   let calls = 0;
+  let wallMs = 0;
+  let complete = false;
   let modelMs = 0;
   let costUsd = 0;
   let tokens = 0;
   let costAvailable = true;
   let costUnavailableReason = '';
   let usageAvailable = true;
-  let done = false;
-  const tick = () => {
-    if (done) return;
-    field(model, 'wall').textContent = fmt(performance.now() - start);
-    requestAnimationFrame(tick);
-  };
-  requestAnimationFrame(tick);
-
   try {
-    for (const [index, text] of items.entries()) {
-      if (signal.aborted) break;
-      field(model, 'prompt').classList.remove('muted');
-      field(model, 'prompt').textContent = prompts[index][model];
-      const resp = await fetch(`/api/classify/${model}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text, labels }),
-        signal,
-      });
+    const resp = await fetch(`/api/run/${model}/${scenario}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ labels }),
+      signal,
+    });
+    if (!resp.ok) {
       const data = await resp.json();
-      if (!resp.ok) {
-        addResult(model, text, 'Error', null, true);
-        field(model, 'prompt').textContent = data.error || `HTTP ${resp.status}`;
+      throw new Error(data.error || `HTTP ${resp.status}`);
+    }
+    let total = null;
+    for await (const data of readEvents(resp)) {
+      if (signal.aborted) break;
+      if (data.type === 'heartbeat') continue;
+      if (data.type === 'calling') {
+        field(model, 'prompt').classList.remove('muted');
+        field(model, 'prompt').textContent = data.prompt;
+        continue;
+      }
+      if (data.type === 'error') throw new Error(data.error);
+      if (data.type === 'done') {
+        wallMs = data.wall_ms;
+        complete = total !== null && calls === total;
         break;
       }
+      if (data.type !== 'result') throw new Error('Unknown server event.');
+      total = data.total;
+      wallMs = data.wall_ms;
+      field(model, 'wall').textContent = fmt(wallMs);
       calls += 1;
       modelMs += data.model_ms;
       field(model, 'calls').textContent = String(calls);
@@ -201,20 +228,17 @@ async function runSide(model, items, labels, signal, prompts) {
       if (!costAvailable) {
         field(model, 'pricing').textContent += ` Total unavailable: ${costUnavailableReason}`;
       }
-      field(model, 'bar').style.width = `${(100 * calls) / items.length}%`;
-      addResult(model, text, data.label, data.model_ms, false);
+      field(model, 'bar').style.width = `${(100 * calls) / total}%`;
+      addResult(model, data.text, data.label, data.model_ms, false);
     }
+    if (!complete && !signal.aborted) throw new Error('Run ended before completion.');
   } catch (err) {
     if (err.name !== 'AbortError') {
       addResult(model, 'Request failed', 'Error', null, true);
       field(model, 'prompt').textContent = String(err);
     }
-  } finally {
-    done = true;
   }
-  const wallMs = performance.now() - start;
   field(model, 'wall').textContent = fmt(wallMs);
-  const complete = calls === items.length;
   if (complete) field(model, 'completion').textContent = 'Done';
   return { model, wallMs, complete, costUsd: costAvailable && calls > 0 ? costUsd : null };
 }

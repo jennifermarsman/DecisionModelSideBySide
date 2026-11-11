@@ -77,14 +77,135 @@ The response's `answers.category.choice` is mapped back to the label name.
 
 4. Pick a scenario, adjust the labels if you like, and press **Run**.
 
+## Run in Azure Container Apps
+
+The demo can run entirely in Azure; only the UI runs in your browser. The
+deployment script builds the Linux image in Azure Container Registry (no local
+Docker required) and deploys a **public HTTPS URL** in your selected region.
+The existing model deployments are not moved or recreated.
+
+With the virtual environment activated:
+
+```bash
+az login
+az account set --subscription "<your-subscription-id>"
+python scripts/deploy.py --location "<region>" --resource-group "<demo-resource-group>" --name "<demo-app-name>"
+```
+
+Configure `.env` first, including both model API keys. The hosting script uses
+API keys for the models; laptop Azure CLI credentials are not copied into the
+container. Optional pricing overrides are carried over, and mock mode is disabled.
+
+Your Azure identity needs permission to create a resource group, Container
+Registry, managed identity, and Container Apps environment/app, plus assign the
+identity `AcrPull` on the registry (for example, subscription Owner). The
+`Microsoft.App`, `Microsoft.ContainerRegistry`, and `Microsoft.ManagedIdentity`
+resource providers must be registered. Azure CLI must support `az containerapp`;
+if needed, install it with `az extension add --name containerapp`.
+
+Choose a dedicated demo resource group and the same region as your Foundry
+resource (see the benchmarking setup below). Re-run the same command to rebuild
+and update the app, including changes to `.env`. The script prints the URL only
+after `/healthz` responds successfully.
+
+The container uses Gunicorn with eight threads and one warm replica (1 vCPU,
+2 GiB), capped at one replica. This keeps both model streams concurrent and
+avoids scale-from-zero startup during the demo. Azure resources incur ongoing
+charges, including the idle replica and registry. The public URL permits anyone
+to invoke the models; it is intended for a demo, not an authenticated service.
+
+The build context contains only runtime code, static assets, sample data, and
+requirements, never `.env` or Git history. API keys are stored as Container Apps
+secrets; registry pulls use a managed identity, not an admin password.
+
+View recent application logs:
+
+```bash
+az containerapp logs show -g "<demo-resource-group>" -n "<demo-app-name>" --tail 50
+```
+
+After the demo, delete **only this dedicated demo resource group** to stop its
+hosting/registry charges (this does not delete the models in other groups):
+
+```bash
+az group delete --name "<demo-resource-group>"
+```
+
+## Set up a comparable benchmark
+
+1. **Keep the app and model resource in the same region.** Choose an Azure region
+   where both models support the deployment type below and you have enough quota.
+   Create a Microsoft Foundry resource there, deploy both models into it, and
+   pass that region to `scripts/deploy.py --location`. Keep the model resource in
+   a separate resource group if you want to retain it after deleting the demo.
+2. **Match deployment types.** Select **Data Zone Standard**
+   (SKU `DataZoneStandard`) for both the chat model and Microsoft Decision model.
+   Use the same data zone; do not compare one Global Standard deployment against
+   one Data Zone Standard deployment and attribute the entire difference to the
+   models. Confirm the type on each deployment's details page. Availability is
+   model- and region-dependent; do not silently substitute another deployment type.
+3. **Point both clients at that resource.** Set these values in your local `.env`,
+   using the actual deployment names and your resource's endpoints and key:
+
+   ```dotenv
+   AZURE_OPENAI_ENDPOINT=https://<foundry-resource>.openai.azure.com/
+   AZURE_OPENAI_API_KEY=<resource-key>
+   AZURE_OPENAI_DEPLOYMENT=<chat-deployment-name>
+   DECISION_ENDPOINT=https://<foundry-resource>.services.ai.azure.com
+   DECISION_API_KEY=<resource-key>
+   DECISION_DEPLOYMENT=<decision-deployment-name>
+   MOCK_MODELS=false
+   ```
+
+   Use the OpenAI endpoint for the chat client and the Foundry services endpoint
+   for Decision, not a project URL. Re-run the deployment script to apply the
+   settings to the hosted app; editing `.env` alone does not update Azure.
+4. **Keep the workload fixed.** Use the same scenario, sample data, labels, and
+   label descriptions for each run. Keep one call at a time per model, as this
+   app does by default, and avoid other users or workloads exercising the
+   deployments during the benchmark. Allocate enough quota to avoid throttling.
+5. **Warm up, then repeat.** Run one complete batch after deployment and discard
+   it as warm-up. Then run several complete batches under the same conditions.
+   Record the median and range of the displayed server wall-clock and average
+   per-call times, rather than reporting only the fastest run. Record failures
+   and throttling separately; do not compare an incomplete side against a complete
+   one. Check label quality alongside speed and cost.
+6. **Record the configuration and pricing assumptions.** Note model versions,
+   deployment types, region/data zone, quota/capacity, sample count, and whether
+   calls were warm or cold. Prompt caching, output/reasoning token counts, SDK
+   retries, and service load can affect results. Use the optional price overrides
+   in `.env.example` for your actual Data Zone Standard rates: the built-in LLM
+   price snapshot assumes Global Standard and is not automatically changed by the
+   deployment SKU.
+
+**Same-region resources do not guarantee same-region inference.**
+Data Zone Standard dynamically routes inference within its permitted data zone,
+not necessarily within the resource's region or to the same datacenter for both
+models. Matching regions and deployment types controls obvious differences in
+the setup, but this remains an end-to-end API benchmark, not an isolated model
+compute benchmark. See Microsoft's
+[deployment type documentation](https://learn.microsoft.com/azure/ai-foundry/foundry-models/concepts/deployment-types).
+
 ## How timing is measured
 
-- **Wall clock**: measured in the browser from the start of a side's run until its last result arrives (includes network and app overhead).
+- **Wall clock**: measured on the server from the start of each side's batch
+  through its final completed response, including server/app overhead. The
+  browser displays the latest server-recorded time rather than a local timer.
 - **Model calls**: one call per data item.
 - **Model time** (calculated but hidden in the UI): the sum of the time spent inside each model API call, measured on the server.
 - **Avg per call**: model time ÷ model calls.
 
-Both sides run at the same time, and each side processes its items one call at a time.
+Both sides run at the same time, and each side processes its items one call at a
+time **on the server**, streaming prompts/results to the browser. Browser request
+latency and slow result delivery do not gate the next model call or enter the
+recorded batch time. Stop disconnects the streams; an in-flight call can still
+finish and be billed before the server observes the disconnect.
+
+Both timings include the **server-to-model** network hop, response parsing,
+and any SDK retries; these are not pure model inference timings. Hosting in Azure
+removes the laptop-to-model hop. Use the same-region, matching-deployment-type
+setup above to reduce avoidable network differences; data-zone routing and
+model cold starts can still affect comparisons.
 
 ## How cost is estimated
 
