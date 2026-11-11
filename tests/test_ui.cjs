@@ -81,11 +81,15 @@ for (const model of ['openai', 'decision']) {
     await flush();
     assert.equal(fields[model].calls.textContent, '1');
     assert.equal(fields[model].avg.textContent, '10.000 ms');
+    assert.equal(fields[model].model.textContent, '0.010 s');
+    assert.equal(fields[model].bar.style.width, '50%');
     assert.equal(fields[model].cost.textContent, '$0.00001000');
     assert.equal(fields[model].tokens.textContent, '11');
     assert.equal(fields[model].completion.textContent, '');
-    stream.send(resultEvent({ wall_ms: 80 }));
+    stream.send(resultEvent({ model_ms: 25, wall_ms: 80 }));
     await flush();
+    assert.equal(fields[model].avg.textContent, '17.500 ms');
+    assert.equal(fields[model].model.textContent, '0.035 s');
     assert.equal(fields[model].completion.textContent, '');
     stream.send({ type: 'done', wall_ms: 85 });
     const completed = await result;
@@ -94,7 +98,7 @@ for (const model of ['openai', 'decision']) {
     assert.equal(completed.costUsd, 0.00002);
     assert.equal(requests, 1);
     assert.equal(fields[model].wall.textContent, '0.085 s');
-    assert.equal(fields[model].avg.textContent, '10.000 ms');
+    assert.equal(fields[model].avg.textContent, '17.500 ms');
     assert.equal(fields[model].cost.textContent, '$0.00002000');
     assert.equal(fields[model].tokens.textContent, '22');
     assert.equal(fields[model].completion.textContent, 'Done');
@@ -118,6 +122,12 @@ test('both model streams start concurrently and comparisons use server times', a
       runSide(model, 'expenses', [], { aborted: false })))`, context,
   );
   assert.deepEqual(requested, ['openai', 'decision']);
+  for (const model of ['openai', 'decision']) {
+    assert.equal(fields[model].calls.textContent, '0');
+    assert.equal(fields[model].bar.style.width, '0');
+    assert.equal(fields[model].results.children.length, 0);
+    assert.equal(fields[model].completion.textContent, '');
+  }
   for (const [model, wallMs, cost] of [['openai', 100, 0.002], ['decision', 200, 0.00002]]) {
     streams[model].send(resultEvent({ total: 1, cost_usd: cost }));
     streams[model].send({ type: 'done', wall_ms: wallMs });
@@ -217,6 +227,8 @@ test('incomplete runs do not show comparisons', () => {
     { model: 'decision', wallMs: 200, complete: true, costUsd: 0.001 },
   ];
   vm.runInContext('showRelative(results)', context);
-  assert.equal(fields.openai.relative.textContent, '');
-  assert.equal(fields.openai['relative-cost'].textContent, '');
+  for (const model of ['openai', 'decision']) {
+    assert.equal(fields[model].relative.textContent, '');
+    assert.equal(fields[model]['relative-cost'].textContent, '');
+  }
 });
