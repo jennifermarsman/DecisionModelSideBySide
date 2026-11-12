@@ -13,8 +13,8 @@ const panels = {
 };
 const field = (model, name) => $(`[data-field="${name}"]`, panels[model]);
 
-// All times are displayed in seconds so they are directly comparable.
 const fmt = (ms) => `${(ms / 1000).toFixed(3)} s`;
+const fmtMs = (ms) => `${ms.toFixed(3)} ms`;
 const money = (usd) => `$${usd.toFixed(8)}`;
 
 async function init() {
@@ -79,7 +79,7 @@ function resetPanels() {
     field(model, 'wall').textContent = fmt(0);
     field(model, 'calls').textContent = '0';
     field(model, 'model').textContent = fmt(0);
-    field(model, 'avg').textContent = fmt(0);
+    field(model, 'avg').textContent = fmtMs(0);
     field(model, 'cost').textContent = money(0);
     field(model, 'tokens').textContent = '0';
     field(model, 'pricing').textContent = 'USD estimates; rates shown after the first response.';
@@ -203,7 +203,7 @@ async function runSide(model, scenario, labels, signal) {
       modelMs += data.model_ms;
       field(model, 'calls').textContent = String(calls);
       field(model, 'model').textContent = fmt(modelMs);
-      field(model, 'avg').textContent = fmt(modelMs / calls);
+      field(model, 'avg').textContent = fmtMs(modelMs / calls);
       if (Number.isFinite(data.cost_usd) && data.cost_usd >= 0) {
         costUsd += data.cost_usd;
       } else {
