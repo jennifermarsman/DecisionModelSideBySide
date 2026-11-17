@@ -1,10 +1,10 @@
-# DecisionModelSideBySide
-Side-by-side comparison of Microsoft Decision vs. a traditional LLM.
+# Decision Model Side By Side
+Side-by-side comparison of Microsoft Decision model vs. a traditional large language model (LLM)
 
 A small web app that classifies the same sample data **in parallel** with:
 
 - **Left:** an Azure OpenAI chat model (prompted to answer with a single label)
-- **Right:** [Microsoft-Decision-1](https://learn.microsoft.com/azure/foundry/foundry-models/how-to/use-foundry-models-microsoft-decision) in Microsoft Foundry (a typed `choice` decision)
+- **Right:** [Microsoft Decision model](https://learn.microsoft.com/azure/foundry/foundry-models/how-to/use-foundry-models-microsoft-decision) in Microsoft Foundry (a typed `choice` decision)
 
 For each side the UI shows the prompt/request being executed, plus a single row of **wall clock time**, **number of model calls**, **average time per model call** (times in seconds), **estimated cost (USD)**, and **reported tokens**. A scrolling list shows each item and the label it was assigned. When both finish, each panel compares its speed and estimated cost.
 
@@ -24,7 +24,7 @@ Labels can be added and removed in the UI before a run; **Reset to defaults** (o
 
 Prerequisites: Python 3.10+, an Azure OpenAI chat deployment, and a Microsoft-Decision-1 deployment in a Microsoft Foundry resource.
 
-The Decision side sends one typed `choice` question per item, as described in [Deploy and use Microsoft-Decision-1](https://learn.microsoft.com/azure/foundry/foundry-models/how-to/use-foundry-models-microsoft-decision):
+The Decision side sends one typed `choice` question per item, as described in [Deploy and use Microsoft-Decision](https://learn.microsoft.com/azure/foundry/foundry-models/how-to/use-foundry-models-microsoft-decision):
 
 ```json
 POST <DECISION_ENDPOINT>/providers/microsoft/v1/systemone
