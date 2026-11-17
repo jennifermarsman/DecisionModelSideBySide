@@ -1,11 +1,11 @@
-"""USD token pricing from an Azure snapshot and attributed user-provided updates."""
+"""USD token pricing from the official Azure Retail Prices API."""
 
 import logging
 import math
 import os
 import re
 
-CHECKED_ON = "2026-11-06"
+CHECKED_ON = "2026-11-17"
 SOURCE = "https://prices.azure.com/api/retail/prices"
 LOGGER = logging.getLogger(__name__)
 RATES = {
@@ -19,14 +19,12 @@ RATES = {
     "microsoft-decision-1": {
         "input": 0.042,
         "output": 0.042,
-        "basis": "Microsoft-Decision-1, standard token rate",
+        "basis": "Microsoft-Decision-1, Global Standard token rate",
     },
     "microsoft-decision-1.1": {
         "input": 0.042,
         "output": 0.042,
-        "basis": "Microsoft-Decision-1.1, user-provided rate (2026-11-10; same as Decision-1)",
-        "source": None,
-        "checked_on": None,
+        "basis": "Microsoft-Decision-1.1, Global Standard token rate",
     },
 }
 

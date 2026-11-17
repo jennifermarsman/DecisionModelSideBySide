@@ -212,7 +212,7 @@ model cold starts can still affect comparisons.
 Each panel totals API-reported tokens and shows an estimated USD cost for completed
 responses. Once both sides complete, the app compares their total costs and speeds.
 
-The snapshot in `pricing.py` was verified on **November 6, 2026** against
+The snapshot in `pricing.py` was verified on **November 17, 2026** against
 [Azure OpenAI pricing](https://azure.microsoft.com/en-us/pricing/details/azure-openai/)
 and the [Azure Retail Prices API](https://prices.azure.com/api/retail/prices).
 Rates are USD per **1 million tokens**:
@@ -220,14 +220,34 @@ Rates are USD per **1 million tokens**:
 | Model / pricing assumption | Input | Cached input | Cache writes | Output |
 | --- | --- | --- | --- | --- |
 | GPT-6.1 Sol, Global Standard, short context | $2.00 | $0.10 | $2.50 | $10.00 |
-| Microsoft-Decision-1, standard token meter | $0.042 | N/A | N/A | $0.042 |
-| Microsoft-Decision-1.1, user-provided rate | $0.042 | N/A | N/A | $0.042 |
+| Microsoft-Decision-1, Global Standard | $0.042 | N/A | N/A | $0.042 |
+| Microsoft-Decision-1.1, Global Standard | $0.042 | N/A | N/A | $0.042 |
 
-Decision-1.1 uses the same $0.042 per million token rate as Decision-1, based on
-user-provided pricing context dated **November 10, 2026**. It is identified separately
-from the November 6 published-price snapshot in the UI.
-Both `microsoft-decision-1.1` and `dev-microsoft-decision-1.1` response model
-identifiers use this rate, including their dated variants.
+The Retail Prices API publishes Decision-1.1 under product **Microsoft Decision
+Models**, SKU **Decision 1.1 Gl**, meter **Decision 1.1 Gl 1M Tokens**.  
+The Decision-1 meter is **Microsoft Decision 1 1M Tokens**.
+GPT-6.1 Sol's short-context Global meters use SKU names starting with
+**6.1-sol ShortCo** and ending with **Std Gl**, under **Azure OpenAI GPT6**.
+
+To reproduce the lookup, query the API for
+[Decision meters](https://prices.azure.com/api/retail/prices?$filter=productName%20eq%20%27Microsoft%20Decision%20Models%27)
+or [GPT-6.1 meters in East US](https://prices.azure.com/api/retail/prices?$filter=contains%28skuName%2C%20%276.1%27%29%20and%20armRegionName%20eq%20%27eastus%27).
+Select USD Consumption meters with unit `1M`, matching your SKU and region.
+
+**Data Zone Standard is not priced at the Global defaults.** For the comparable
+benchmark setup above, configure overrides using your region's published rates.
+These reference rates were also checked on November 17, 2026; they are not
+automatically selected by the app:
+
+| Model / pricing assumption | Input | Cached input | Cache writes | Output |
+| --- | --- | --- | --- | --- |
+| GPT-6.1 Sol, Data Zone Standard, short context, East US | $2.20 | $0.11 | $2.75 | $11.00 |
+| Microsoft-Decision-1.1, Data Zone Standard, East US | $0.046 | N/A | N/A | $0.046 |
+| Microsoft-Decision-1.1, Data Zone Standard, West Europe | $0.050 | N/A | N/A | $0.050 |
+
+Decision-1.1 Data Zone uses SKU **Decision 1.1 DZ**. Set
+`DECISION_USD_PER_MILLION` for Decision and all four
+`AZURE_OPENAI_*_USD_PER_MILLION` overrides for the LLM's applicable token categories.
 
 LLM cached-input and cache-write tokens are removed from ordinary input before
 their separate rates are applied. Output usage already includes reasoning tokens;

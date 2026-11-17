@@ -18,7 +18,8 @@ def test_cached_and_cache_write_tokens_are_not_double_counted():
         "cache_write_tokens": 100,
     })
     assert result["cost_usd"] == pytest.approx((500 * 2 + 400 * 0.1 + 100 * 2.5 + 100 * 10) / 1_000_000)
-    assert result["pricing"]["checked_on"] == "2026-11-06"
+    assert result["pricing"]["checked_on"] == "2026-11-17"
+    assert result["pricing"]["source"] == "https://prices.azure.com/api/retail/prices"
 
 
 def test_custom_rates_support_unknown_models(monkeypatch):
@@ -50,9 +51,9 @@ def test_decision_1_1_uses_same_rate_as_decision_1(model):
     assert result["cost_usd"] == pytest.approx(0.0462)
     assert result["cost_usd"] == original["cost_usd"]
     assert result["cost_unavailable_reason"] is None
-    assert "user-provided rate (2026-11-10" in result["pricing"]["basis"]
-    assert result["pricing"]["checked_on"] is None
-    assert result["pricing"]["source"] is None
+    assert result["pricing"]["basis"] == "Microsoft-Decision-1.1, Global Standard token rate"
+    assert result["pricing"]["checked_on"] == "2026-11-17"
+    assert result["pricing"]["source"] == "https://prices.azure.com/api/retail/prices"
 
 
 @pytest.mark.parametrize("model", ["microsoft-decision-1.1", "dev-microsoft-decision-1.1"])
@@ -63,6 +64,16 @@ def test_decision_1_1_rate_can_be_overridden(monkeypatch, model):
     })
     assert result["cost_usd"] == pytest.approx(0.055)
     assert result["pricing"]["basis"] == "Configured USD pricing overrides"
+
+
+def test_decision_data_zone_override_is_not_reported_as_verified_global_pricing(monkeypatch):
+    monkeypatch.setenv("DECISION_USD_PER_MILLION", "0.046")
+    result = estimate_cost("decision", "microsoft-decision-1.1", {
+        "input_tokens": 1_000_000, "output_tokens": 100_000,
+    })
+    assert result["cost_usd"] == pytest.approx(0.0506)
+    assert result["pricing"]["checked_on"] is None
+    assert result["pricing"]["source"] is None
 
 
 @pytest.mark.parametrize("model", ["microsoft-decision-1.2", "dev-microsoft-decision-1.2"])
