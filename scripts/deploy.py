@@ -29,6 +29,30 @@ def az(*args, output=True):
     return json.loads(result.stdout) if output and result.stdout.strip() else None
 
 
+def model_settings(resource_group, account_name, llm_deployment, decision_deployment):
+    account = az("cognitiveservices", "account", "show", "-g", resource_group, "-n", account_name)
+    if account["kind"] != "AIServices":
+        raise ValueError("Both models must be deployed in an AIServices Foundry account")
+    domain = account["properties"]["customSubDomainName"]
+    for deployment in (llm_deployment, decision_deployment):
+        az(
+            "cognitiveservices", "account", "deployment", "show",
+            "-g", resource_group, "-n", account_name, "--deployment-name", deployment,
+        )
+    key = az(
+        "cognitiveservices", "account", "keys", "list",
+        "-g", resource_group, "-n", account_name,
+    )["key1"]
+    return {
+        "AZURE_OPENAI_ENDPOINT": f"https://{domain}.openai.azure.com/",
+        "AZURE_OPENAI_API_KEY": key,
+        "AZURE_OPENAI_DEPLOYMENT": llm_deployment,
+        "DECISION_ENDPOINT": f"https://{domain}.services.ai.azure.com",
+        "DECISION_API_KEY": key,
+        "DECISION_DEPLOYMENT": decision_deployment,
+    }
+
+
 def configuration(location, environment, identity, registry, image, settings):
     secrets = []
     variables = [{"name": "MOCK_MODELS", "value": "false"}]
@@ -81,8 +105,19 @@ def main():
     parser.add_argument("--resource-group", default="rg-decision-sidebyside-centralus")
     parser.add_argument("--name", default="decision-sidebyside")
     parser.add_argument("--env-file", type=Path, default=ROOT / ".env")
+    parser.add_argument("--model-resource-group")
+    parser.add_argument("--model-account")
+    parser.add_argument("--llm-deployment", default="gpt-6.1-sol")
+    parser.add_argument("--decision-deployment", default="decision-1.1")
     args = parser.parse_args()
     settings = dotenv_values(args.env_file)
+    if bool(args.model_resource_group) != bool(args.model_account):
+        parser.error("--model-resource-group and --model-account must be supplied together")
+    if args.model_account:
+        settings.update(model_settings(
+            args.model_resource_group, args.model_account,
+            args.llm_deployment, args.decision_deployment,
+        ))
     required = (
         "AZURE_OPENAI_ENDPOINT", "AZURE_OPENAI_API_KEY", "AZURE_OPENAI_DEPLOYMENT",
         "DECISION_ENDPOINT", "DECISION_API_KEY", "DECISION_DEPLOYMENT",
@@ -98,11 +133,16 @@ def main():
     groups = az("group", "list", "--query", f"[?name=='{group}'].name")
     if not groups:
         az("group", "create", "-n", group, "-l", args.location, output=False)
-    registry = az(
-        "acr", "create", "-g", group, "-n", registry_name,
-        "--sku", "Basic", "--admin-enabled", "false",
+    infrastructure = az(
+        "deployment", "group", "create", "-g", group, "-n", f"{args.name}-hosting",
+        "--template-file", str(ROOT / "infra" / "hosting.bicep"),
+        "--parameters", f"location={args.location}", f"appName={args.name}",
+        f"registryName={registry_name}",
     )
-    identity = az("identity", "create", "-g", group, "-n", f"{args.name}-pull")
+    outputs = infrastructure["properties"]["outputs"]
+    registry = outputs["registry"]["value"]
+    identity = outputs["identity"]["value"]
+    environment_id = outputs["environmentId"]["value"]
     assignments = az(
         "role", "assignment", "list", "--scope", registry["id"], "--role", "AcrPull",
         "--fill-principal-name", "false",
@@ -114,10 +154,6 @@ def main():
             "--assignee-principal-type", "ServicePrincipal", "--role", "AcrPull",
             "--scope", registry["id"], output=False,
         )
-    environment = az(
-        "containerapp", "env", "create", "-g", group, "-n", f"{args.name}-env",
-        "-l", args.location, "--logs-destination", "none",
-    )
     tag = f"demo:{time.time_ns()}"
     print("Building the container in Azure (no local Docker required)...", flush=True)
     # Stage only runtime files: .env, Git history, and local caches never leave the machine.
@@ -132,7 +168,7 @@ def main():
             shutil.copytree(ROOT / name, context / name)
         az("acr", "build", "-r", registry_name, "-t", tag, str(context), output=False)
     config = configuration(
-        args.location, environment["id"], identity["id"], registry["loginServer"],
+        args.location, environment_id, identity["id"], registry["loginServer"],
         f"{registry['loginServer']}/{tag}", settings,
     )
     # Secrets go via a mode-0600 temporary file, not CLI arguments or build context.
