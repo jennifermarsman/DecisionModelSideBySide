@@ -79,17 +79,136 @@ The response's `answers.category.choice` is mapped back to the label name.
 
 ## Run in Azure Container Apps
 
+### Deployment
+
+Run these commands from the repository root in **Bash**, using Azure public
+cloud. Nothing below requires local Docker. These files recreate the demo:
+
+- [`infra/hosting.bicep`](infra/hosting.bicep): Basic Container Registry,
+  user-assigned identity, and Consumption Container Apps environment without a
+  Log Analytics workspace.
+- [`infra/models.bicep`](infra/models.bicep): Foundry account and the two model
+  deployments used by the live demo on **November 19, 2026**: `gpt-6.1-sol`
+  version `2026-09-29`, capacity `10`, and `Microsoft-Decision-1.1` version `1`,
+  capacity `2160`; both `DataZoneStandard`.
+- [`scripts/deploy.py`](scripts/deploy.py): applies the hosting template,
+  grants registry pull access, builds the current checkout in Azure, and
+  creates/updates the app, its secrets, HTTPS ingress, probes, and replica settings.
+
+Capacity values are Azure deployment SKU units, not raw tokens per minute.
+Recreation requires model access, regional availability, and sufficient quota.
+If a pinned version is retired, update the model parameters explicitly; the
+template does not silently substitute another model or deployment type.
+The model template restores only these two models, not unrelated deployments,
+Foundry projects, or other resources in an existing account.
+
+**1. Prepare the tools and subscription.** Install
+[Azure CLI](https://learn.microsoft.com/cli/azure/install-azure-cli) and Python
+3.10+ first, then run:
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+python -m pip install -r requirements.txt
+az login
+az account set --subscription "<your-subscription-id>"
+LOCATION=centralus
+az extension add --name containerapp --upgrade
+az bicep install
+az provider register --namespace Microsoft.App --wait
+az provider register --namespace Microsoft.ContainerRegistry --wait
+az provider register --namespace Microsoft.ManagedIdentity --wait
+az provider register --namespace Microsoft.CognitiveServices --wait
+```
+
+Use an identity with resource creation and role-assignment permissions
+(for example, subscription Owner). When using `--model-account`, it also needs
+permission to read that account's keys. Deploying a new model may require accepting
+its terms/access requirements in Foundry first.
+
+`LOCATION` defaults to `centralus`. To use another region, set
+`LOCATION="<region>"` in the same shell before continuing. Use the same region
+as your Foundry account when using existing models.
+
+**2a. Create the models only if you need them.** Skip this step if using
+an existing Foundry account and deployments.
+
+Replace `<demo-resource-group>` with your dedicated hosting group name and
+`<model-resource-group>` with your separate models group name throughout these
+examples.
+
+```bash
+az group create --name "<model-resource-group>" --location "$LOCATION"
+az deployment group create \
+  --resource-group "<model-resource-group>" \
+  --name decision-models \
+  --template-file infra/models.bicep \
+  --parameters location="$LOCATION"
+MODEL_RESOURCE_GROUP="<model-resource-group>"
+MODEL_ACCOUNT=$(az deployment group show \
+  --resource-group "$MODEL_RESOURCE_GROUP" --name decision-models \
+  --query properties.outputs.accountName.value --output tsv)
+```
+
+The template generates a unique account name for this resource group. If that
+name is unavailable or still soft-deleted after a previous teardown, choose a
+new globally unique name by adding `accountName=<new-unique-name>` to the
+deployment's `--parameters`. On every subsequent deployment, pass the same
+`accountName` and any other overrides again; omitted parameters use their defaults.
+Other model settings can be overridden on the same command, for example
+`llmCapacity=10 decisionCapacity=2160`.
+
+**If using existing models instead of deploying new ones**, set these 
+variables rather than running step 2. Replace `<model-resource-name>` with your
+existing Foundry account name:
+
+```bash
+MODEL_RESOURCE_GROUP="<model-resource-group>"
+MODEL_ACCOUNT="<model-resource-name>"
+```
+
+**3. Rebuild and deploy the app.** In the same shell:
+
+```bash
+python scripts/deploy.py \
+  --location "$LOCATION" \
+  --resource-group "<demo-resource-group>" \
+  --name decision-sidebyside \
+  --model-resource-group "$MODEL_RESOURCE_GROUP" \
+  --model-account "$MODEL_ACCOUNT" \
+  --llm-deployment gpt-6.1-sol \
+  --decision-deployment decision-1.1
+```
+
+This works without a `.env`: the script checks both model deployments, retrieves
+the account's current endpoints/key, and passes the key as Container Apps
+secrets without printing it or saving it to the repository. For accurate cost
+comparisons with the Data Zone Standard deployments, configure your region's
+pricing overrides in `.env` (see [How cost is estimated](#how-cost-is-estimated));
+otherwise the app uses Global Standard rates. Any `.env` API-version overrides
+are also used; model account arguments override its model endpoints, keys, and
+deployment names. Adjust
+`--llm-deployment` / `--decision-deployment` if you customized deployment names.
+Use the same hosting group and app name on subsequent runs. The script prints
+the public URL after the health check succeeds. A rebuilt app may have a
+different URL after deletion; no custom domain or DNS is restored.
+
+### Deploy using manually configured model settings
+
 The demo can run entirely in Azure; only the UI runs in your browser. The
 deployment script builds the Linux image in Azure Container Registry (no local
 Docker required) and deploys a **public HTTPS URL** in your selected region.
 The existing model deployments are not moved or recreated.
 
-With the virtual environment activated:
+With the virtual environment activated, set `LOCATION` (default: `centralus`).
+For another region, replace the assignment with `LOCATION="<region>"`, using
+the same region as your Foundry account:
 
 ```bash
 az login
 az account set --subscription "<your-subscription-id>"
-python scripts/deploy.py --location "<region>" --resource-group "<demo-resource-group>" --name "<demo-app-name>"
+LOCATION=centralus
+python scripts/deploy.py --location "$LOCATION" --resource-group "<demo-resource-group>" --name "<demo-app-name>"
 ```
 
 Configure `.env` first, including both model API keys. The hosting script uses
@@ -124,12 +243,38 @@ View recent application logs:
 az containerapp logs show -g "<demo-resource-group>" -n "<demo-app-name>" --tail 50
 ```
 
-After the demo, delete **only this dedicated demo resource group** to stop its
-hosting/registry charges (this does not delete the models in other groups):
+### Tear down to avoid ongoing hosting charges
+
+Delete **only the dedicated demo hosting group**. This removes the warm app,
+environment, registry/images, and pull identity, but not models in other groups.
+Stopping the app alone does not remove all hosting resources.
 
 ```bash
 az group delete --name "<demo-resource-group>"
 ```
+
+If you created the **dedicated models group in step 2** and no longer need it,
+delete that too:
+
+```bash
+az group delete --name "<model-resource-group>"
+```
+
+These commands prompt for confirmation. Replace the placeholders with your actual
+dedicated group names. **Do not delete a shared models resource group wholesale**:
+it may also contain model deployments beyond this demo. Only run the model-group
+deletion command for a dedicated group created for this demo. If you retained a
+shared account, manage its unused deployments separately.
+Azure may retain soft-deleted Foundry accounts; follow the
+[recovery/purge guidance](https://learn.microsoft.com/azure/ai-services/recover-purge-resources)
+if you need to reuse a deleted name.
+
+Before teardown, keep this checkout and any `.env` pricing overrides in a secure
+local location. Do not commit keys. Deleted registry images are rebuilt from the
+checkout, and newly created model accounts have new keys. To restore, repeat
+steps 1–3 (or skip model creation if those resources remain). Azure deployment
+operations are not transactional: if one fails partway, inspect the target
+groups, fix the reported error, then rerun or delete the dedicated groups.
 
 ## Set up a comparable benchmark
 
