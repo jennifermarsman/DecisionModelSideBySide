@@ -33,6 +33,8 @@ def model_settings(resource_group, account_name, llm_deployment, decision_deploy
     account = az("cognitiveservices", "account", "show", "-g", resource_group, "-n", account_name)
     if account["kind"] != "AIServices":
         raise ValueError("Both models must be deployed in an AIServices Foundry account")
+    if account["properties"].get("publicNetworkAccess") == "Disabled":
+        raise ValueError("This hosting setup requires a model account with public network access enabled")
     domain = account["properties"]["customSubDomainName"]
     for deployment in (llm_deployment, decision_deployment):
         az(

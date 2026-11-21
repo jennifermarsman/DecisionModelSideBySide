@@ -49,7 +49,7 @@ resource llm 'Microsoft.CognitiveServices/accounts/deployments@2025-06-01' = {
       name: llmModelName
       version: llmModelVersion
     }
-    versionUpgradeOption: 'OnceNewDefaultVersionAvailable'
+    versionUpgradeOption: 'NoAutoUpgrade'
   }
 }
 
@@ -66,7 +66,7 @@ resource decision 'Microsoft.CognitiveServices/accounts/deployments@2025-06-01' 
       name: decisionModelName
       version: decisionModelVersion
     }
-    versionUpgradeOption: 'OnceNewDefaultVersionAvailable'
+    versionUpgradeOption: 'NoAutoUpgrade'
   }
   dependsOn: [
     llm

@@ -153,8 +153,8 @@ MODEL_ACCOUNT=$(az deployment group show \
 The template generates a unique account name for this resource group. If that
 name is unavailable or still soft-deleted after a previous teardown, choose a
 new globally unique name by adding `accountName=<new-unique-name>` to the
-deployment's `--parameters`. Rerunning the deployment in the same group updates
-the same account; do not change its name unless intentionally creating another.
+deployment's `--parameters`. On every subsequent deployment, pass the same
+`accountName` and any other overrides again; omitted parameters use their defaults.
 Other model settings can be overridden on the same command, for example
 `llmCapacity=10 decisionCapacity=2160`.
 
@@ -182,9 +182,12 @@ python scripts/deploy.py \
 
 This works without a `.env`: the script checks both model deployments, retrieves
 the account's current endpoints/key, and passes the key as Container Apps
-secrets without printing it or saving it to the repository. If `.env` exists,
-its optional pricing/API-version overrides are still used; model account
-arguments override its model endpoints, keys, and deployment names. Adjust
+secrets without printing it or saving it to the repository. For accurate cost
+comparisons with the Data Zone Standard deployments, configure your region's
+pricing overrides in `.env` (see [How cost is estimated](#how-cost-is-estimated));
+otherwise the app uses Global Standard rates. Any `.env` API-version overrides
+are also used; model account arguments override its model endpoints, keys, and
+deployment names. Adjust
 `--llm-deployment` / `--decision-deployment` if you customized deployment names.
 Use the same hosting group and app name on subsequent runs. The script prints
 the public URL after the health check succeeds. A rebuilt app may have a
