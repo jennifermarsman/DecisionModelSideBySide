@@ -43,6 +43,12 @@ POST <DECISION_ENDPOINT>/providers/microsoft/v1/systemone
 
 The response's `answers.category.choice` is mapped back to the label name.
 
+Both clients default to **Microsoft Entra ID** (`MODEL_AUTH_MODE=entra`).
+Locally they use `DefaultAzureCredential` (including `az login`); in Azure the
+deployment script selects the app's user-assigned managed identity.
+API keys are supported only with the explicit setting `MODEL_AUTH_MODE=api-key`.
+Entra failures never fall back to keys, even if old keys remain in `.env`.
+
 1. Create a virtual environment and install dependencies:
 
    ```bash
@@ -59,23 +65,37 @@ The response's `answers.category.choice` is mapped back to the label name.
 
    | Setting | Description |
    | --- | --- |
+   | `MODEL_AUTH_MODE` | `entra` (default) or `api-key`, for both models |
    | `AZURE_OPENAI_ENDPOINT` | Your Azure OpenAI endpoint, e.g. `https://<resource>.openai.azure.com/` |
-   | `AZURE_OPENAI_API_KEY` | Azure OpenAI API key |
+   | `AZURE_OPENAI_API_KEY` | Required only in `api-key` mode; ignored in `entra` mode |
    | `AZURE_OPENAI_DEPLOYMENT` | Name of your chat model deployment (e.g. `gpt-4o-mini`) |
    | `AZURE_OPENAI_API_VERSION` | API version (default `2024-10-21`) |
    | `DECISION_ENDPOINT` | Your Foundry resource endpoint; the app calls `<endpoint>/providers/microsoft/v1/systemone` |
-   | `DECISION_API_KEY` | Foundry resource API key. Optional: leave empty to use Microsoft Entra ID instead (e.g. run `az login`; your identity needs a role such as *Cognitive Services User* on the resource) |
+   | `DECISION_API_KEY` | Required only in `api-key` mode; ignored in `entra` mode |
    | `DECISION_DEPLOYMENT` | Name of your Microsoft-Decision-1 deployment (the deployment name, not the model name) |
+   | `AZURE_CLIENT_ID` | User-assigned managed identity client ID. Set automatically in Azure; leave unset locally to use developer credentials |
    | `MOCK_MODELS` | Set to `true` to try the UI without any Azure resources (simulated classifiers and latency) |
    | `PORT` | Port to listen on (default `5000`) |
 
-3. Run the app and open <http://127.0.0.1:5000>:
+3. For local Entra authentication, sign in with an identity that has
+   **Cognitive Services OpenAI User** and **Cognitive Services User** on the
+   Foundry account. A resource administrator can assign these roles under
+   **Access control (IAM)**. Allow several minutes for new grants to propagate.
+   Then run the app and open <http://127.0.0.1:5000>:
 
    ```bash
+   az login                        # Entra mode only
    python app.py
    ```
 
 4. Pick a scenario, adjust the labels if you like, and press **Run**.
+
+For API-key mode, set `MODEL_AUTH_MODE=api-key` and both key settings instead;
+the account must allow key authentication. Restart the app after changing
+authentication settings. See Microsoft's
+[Azure OpenAI managed identity](https://learn.microsoft.com/azure/ai-services/openai/how-to/managed-identity)
+and [Foundry Entra authentication](https://learn.microsoft.com/azure/foundry/foundry-models/how-to/configure-entra-id)
+guides for the token and role requirements.
 
 ## Run in Azure Container Apps
 
@@ -92,8 +112,9 @@ cloud. Nothing below requires local Docker. These files recreate the demo:
   version `2026-09-29`, capacity `10`, and `Microsoft-Decision-1.1` version `1`,
   capacity `2160`; both `DataZoneStandard`.
 - [`scripts/deploy.py`](scripts/deploy.py): applies the hosting template,
-  grants registry pull access, builds the current checkout in Azure, and
-  creates/updates the app, its secrets, HTTPS ingress, probes, and replica settings.
+  grants registry pull and model inference access, builds the current checkout
+  in Azure, and creates/updates the app, authentication, HTTPS ingress, probes,
+  and replica settings.
 
 Capacity values are Azure deployment SKU units, not raw tokens per minute.
 Recreation requires model access, regional availability, and sufficient quota.
@@ -121,10 +142,11 @@ az provider register --namespace Microsoft.ManagedIdentity --wait
 az provider register --namespace Microsoft.CognitiveServices --wait
 ```
 
-Use an identity with resource creation and role-assignment permissions
-(for example, subscription Owner). When using `--model-account`, it also needs
-permission to read that account's keys. Deploying a new model may require accepting
-its terms/access requirements in Foundry first.
+Use an identity with resource creation and role-assignment permissions on the
+hosting resources and target Foundry account (for example, subscription Owner).
+**Entra mode does not read account keys or require key-read permission.**
+Deploying a new model may require accepting its terms/access requirements in
+Foundry first.
 
 `LOCATION` defaults to `centralus`. To use another region, set
 `LOCATION="<region>"` in the same shell before continuing. Use the same region
@@ -157,6 +179,9 @@ deployment's `--parameters`. On every subsequent deployment, pass the same
 `accountName` and any other overrides again; omitted parameters use their defaults.
 Other model settings can be overridden on the same command, for example
 `llmCapacity=10 decisionCapacity=2160`.
+The model template defaults to `authMode=entra`, which disables account API-key
+authentication. Only apply it to a new/dedicated account or one whose consumers
+are ready for Entra authentication; it affects every deployment in that account.
 
 **If using existing models instead of deploying new ones**, set these 
 variables rather than running step 2. Replace `<model-resource-name>` with your
@@ -176,29 +201,58 @@ python scripts/deploy.py \
   --name decision-sidebyside \
   --model-resource-group "$MODEL_RESOURCE_GROUP" \
   --model-account "$MODEL_ACCOUNT" \
+  --auth-mode entra \
   --llm-deployment gpt-6.1-sol \
   --decision-deployment decision-1.1
 ```
 
-This works without a `.env`: the script checks both model deployments, retrieves
-the account's current endpoints/key, and passes the key as Container Apps
-secrets without printing it or saving it to the repository. For accurate cost
+This works without a `.env`: the script checks both model deployments, reads
+the account's endpoints, and grants the app's managed identity **Cognitive
+Services OpenAI User** and **Cognitive Services User** at account scope. It sets
+`AZURE_CLIENT_ID` to select that identity for both clients and grants `AcrPull`
+on the registry. Laptop credentials are never copied into the container.
+For accurate cost
 comparisons with the Data Zone Standard deployments, configure your region's
 pricing overrides in `.env` (see [How cost is estimated](#how-cost-is-estimated));
 otherwise the app uses Global Standard rates. Any `.env` API-version overrides
-are also used; model account arguments override its model endpoints, keys, and
-deployment names. Adjust
+are also used; model account arguments override its model endpoints and
+deployment names. `--auth-mode` overrides `.env`'s `MODEL_AUTH_MODE`; omitted
+from both, the mode is `entra`. Adjust
 `--llm-deployment` / `--decision-deployment` if you customized deployment names.
 Use the same hosting group and app name on subsequent runs. The script prints
 the public URL after the health check succeeds. A rebuilt app may have a
 different URL after deletion; no custom domain or DNS is restored.
 
-### Deploy using manually configured model settings
+When upgrading an older key-based app, rerun step 3 with `--auth-mode entra`.
+The new active revision has no model-key environment variables, and the script
+removes the two old model-key secrets after the revision is replaced. It does
+not revoke old model-role assignments or change authentication on an existing
+shared Foundry account. After confirming all consumers use Entra, an account
+administrator can disable key authentication explicitly:
+
+```bash
+az resource update \
+  --resource-group "$MODEL_RESOURCE_GROUP" \
+  --resource-type Microsoft.CognitiveServices/accounts \
+  --name "$MODEL_ACCOUNT" \
+  --set properties.disableLocalAuth=true \
+  --output none
+```
+
+### Optional API-key deployment
 
 The demo can run entirely in Azure; only the UI runs in your browser. The
 deployment script builds the Linux image in Azure Container Registry (no local
 Docker required) and deploys a **public HTTPS URL** in your selected region.
 The existing model deployments are not moved or recreated.
+
+To opt into keys with the account arguments from step 3, replace
+`--auth-mode entra` with `--auth-mode api-key`. This mode reads the account key
+and requires key-read permission. The script rejects a supplied account with
+key authentication disabled; it does not silently enable keys.
+To create a **dedicated** key-enabled model account, add `authMode=api-key` to
+step 2a's `--parameters`, and include the same parameter on subsequent template
+deployments. An organization policy may prohibit key authentication.
 
 With the virtual environment activated, set `LOCATION` (default: `centralus`).
 For another region, replace the assignment with `LOCATION="<region>"`, using
@@ -208,12 +262,19 @@ the same region as your Foundry account:
 az login
 az account set --subscription "<your-subscription-id>"
 LOCATION=centralus
-python scripts/deploy.py --location "$LOCATION" --resource-group "<demo-resource-group>" --name "<demo-app-name>"
+python scripts/deploy.py \
+  --location "$LOCATION" \
+  --resource-group "<demo-resource-group>" \
+  --name "<demo-app-name>" \
+  --auth-mode api-key
 ```
 
-Configure `.env` first, including both model API keys. The hosting script uses
-API keys for the models; laptop Azure CLI credentials are not copied into the
-container. Optional pricing overrides are carried over, and mock mode is disabled.
+For this manually configured variant, configure `.env` first, including both
+endpoints, deployment names, and API keys. Model account arguments can be omitted
+**only in API-key mode**; Entra hosting requires them to scope role assignments.
+Keys are passed via a protected temporary configuration file into Container Apps
+secrets, not CLI arguments or the build context. Optional pricing overrides are
+carried over, and mock mode is disabled.
 
 Your Azure identity needs permission to create a resource group, Container
 Registry, managed identity, and Container Apps environment/app, plus assign the
@@ -234,8 +295,15 @@ charges, including the idle replica and registry. The public URL permits anyone
 to invoke the models; it is intended for a demo, not an authenticated service.
 
 The build context contains only runtime code, static assets, sample data, and
-requirements, never `.env` or Git history. API keys are stored as Container Apps
-secrets; registry pulls use a managed identity, not an admin password.
+requirements, never `.env` or Git history. In Entra mode no API-key settings or
+secrets are uploaded, even if `.env` still contains keys. Explicit key mode
+stores keys as Container Apps secrets; registry pulls always use a managed
+identity, not an admin password.
+
+`/healthz` checks the web process, not model permissions. After deployment, open
+the app and run both panels. New role grants may take several minutes to
+propagate; if inference returns 403, confirm both account-scoped roles and retry
+after propagation. Do not switch to keys as an automatic workaround.
 
 View recent application logs:
 
@@ -271,7 +339,7 @@ if you need to reuse a deleted name.
 
 Before teardown, keep this checkout and any `.env` pricing overrides in a secure
 local location. Do not commit keys. Deleted registry images are rebuilt from the
-checkout, and newly created model accounts have new keys. To restore, repeat
+checkout, and managed-identity role assignments are recreated by the script. To restore, repeat
 steps 1–3 (or skip model creation if those resources remain). Azure deployment
 operations are not transactional: if one fails partway, inspect the target
 groups, fix the reported error, then rerun or delete the dedicated groups.
@@ -290,14 +358,13 @@ groups, fix the reported error, then rerun or delete the dedicated groups.
    models. Confirm the type on each deployment's details page. Availability is
    model- and region-dependent; do not silently substitute another deployment type.
 3. **Point both clients at that resource.** Set these values in your local `.env`,
-   using the actual deployment names and your resource's endpoints and key:
+   using the actual deployment names and your resource's endpoints:
 
    ```dotenv
+   MODEL_AUTH_MODE=entra
    AZURE_OPENAI_ENDPOINT=https://<foundry-resource>.openai.azure.com/
-   AZURE_OPENAI_API_KEY=<resource-key>
    AZURE_OPENAI_DEPLOYMENT=<chat-deployment-name>
    DECISION_ENDPOINT=https://<foundry-resource>.services.ai.azure.com
-   DECISION_API_KEY=<resource-key>
    DECISION_DEPLOYMENT=<decision-deployment-name>
    MOCK_MODELS=false
    ```

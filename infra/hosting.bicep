@@ -43,5 +43,6 @@ output registry object = {
 output identity object = {
   id: identity.id
   principalId: identity.properties.principalId
+  clientId: identity.properties.clientId
 }
 output environmentId string = environment.id

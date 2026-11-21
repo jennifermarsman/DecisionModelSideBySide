@@ -15,11 +15,12 @@ from dotenv import dotenv_values
 
 ROOT = Path(__file__).resolve().parents[1]
 SETTINGS = (
-    "AZURE_OPENAI_ENDPOINT", "AZURE_OPENAI_API_KEY", "AZURE_OPENAI_DEPLOYMENT",
-    "AZURE_OPENAI_API_VERSION", "DECISION_ENDPOINT", "DECISION_API_KEY",
+    "AZURE_OPENAI_ENDPOINT", "AZURE_OPENAI_DEPLOYMENT",
+    "AZURE_OPENAI_API_VERSION", "DECISION_ENDPOINT", "AZURE_CLIENT_ID",
     "DECISION_DEPLOYMENT", "AZURE_OPENAI_INPUT_USD_PER_MILLION",
     "AZURE_OPENAI_OUTPUT_USD_PER_MILLION", "AZURE_OPENAI_CACHED_INPUT_USD_PER_MILLION",
     "AZURE_OPENAI_CACHE_WRITE_USD_PER_MILLION", "DECISION_USD_PER_MILLION",
+    "MODEL_AUTH_MODE",
 )
 
 
@@ -29,7 +30,9 @@ def az(*args, output=True):
     return json.loads(result.stdout) if output and result.stdout.strip() else None
 
 
-def model_settings(resource_group, account_name, llm_deployment, decision_deployment):
+def model_settings(resource_group, account_name, llm_deployment, decision_deployment, auth_mode="entra"):
+    if auth_mode not in ("entra", "api-key"):
+        raise ValueError("Authentication mode must be 'entra' or 'api-key'")
     account = az("cognitiveservices", "account", "show", "-g", resource_group, "-n", account_name)
     if account["kind"] != "AIServices":
         raise ValueError("Both models must be deployed in an AIServices Foundry account")
@@ -41,33 +44,63 @@ def model_settings(resource_group, account_name, llm_deployment, decision_deploy
             "cognitiveservices", "account", "deployment", "show",
             "-g", resource_group, "-n", account_name, "--deployment-name", deployment,
         )
-    key = az(
-        "cognitiveservices", "account", "keys", "list",
-        "-g", resource_group, "-n", account_name,
-    )["key1"]
-    return {
+    settings = {
         "AZURE_OPENAI_ENDPOINT": f"https://{domain}.openai.azure.com/",
-        "AZURE_OPENAI_API_KEY": key,
         "AZURE_OPENAI_DEPLOYMENT": llm_deployment,
         "DECISION_ENDPOINT": f"https://{domain}.services.ai.azure.com",
-        "DECISION_API_KEY": key,
         "DECISION_DEPLOYMENT": decision_deployment,
     }
+    if auth_mode == "api-key":
+        if account["properties"].get("disableLocalAuth"):
+            raise ValueError(
+                "The Foundry account disables API-key authentication; use --auth-mode entra "
+                "or explicitly enable key authentication on an account you manage"
+            )
+        key = az(
+            "cognitiveservices", "account", "keys", "list",
+            "-g", resource_group, "-n", account_name,
+        )["key1"]
+        settings.update(AZURE_OPENAI_API_KEY=key, DECISION_API_KEY=key)
+    return settings, account["id"]
+
+
+def ensure_role_assignment(scope, role, principal_id):
+    assignments = az(
+        "role", "assignment", "list", "--scope", scope, "--role", role,
+        "--fill-principal-name", "false",
+        "--query", f"[?principalId=='{principal_id}']",
+    )
+    if not assignments:
+        az(
+            "role", "assignment", "create", "--assignee-object-id", principal_id,
+            "--assignee-principal-type", "ServicePrincipal", "--role", role,
+            "--scope", scope, output=False,
+        )
 
 
 def configuration(location, environment, identity, registry, image, settings):
+    mode = settings.get("MODEL_AUTH_MODE", "entra")
+    if mode not in ("entra", "api-key"):
+        raise ValueError("MODEL_AUTH_MODE must be 'entra' or 'api-key'")
     secrets = []
-    variables = [{"name": "MOCK_MODELS", "value": "false"}]
+    variables = [
+        {"name": "MOCK_MODELS", "value": "false"},
+        {"name": "MODEL_AUTH_MODE", "value": mode},
+    ]
     for name in SETTINGS:
+        if name == "MODEL_AUTH_MODE":
+            continue
         value = settings.get(name)
         if not value:
             continue
-        if name.endswith("_API_KEY"):
+        variables.append({"name": name, "value": value})
+    if mode == "api-key":
+        for name in ("AZURE_OPENAI_API_KEY", "DECISION_API_KEY"):
+            if not settings.get(name):
+                raise ValueError(f"{name} is required for API-key authentication")
             secret_name = name.lower().replace("_", "-")
-            secrets.append({"name": secret_name, "value": value})
+            secrets.append({"name": secret_name, "value": settings[name]})
             variables.append({"name": name, "secretRef": secret_name})
-        else:
-            variables.append({"name": name, "value": value})
     return {
         "location": location,
         "identity": {"type": "UserAssigned", "userAssignedIdentities": {identity: {}}},
@@ -109,21 +142,29 @@ def main():
     parser.add_argument("--env-file", type=Path, default=ROOT / ".env")
     parser.add_argument("--model-resource-group")
     parser.add_argument("--model-account")
+    parser.add_argument("--auth-mode", choices=("entra", "api-key"), help="Overrides MODEL_AUTH_MODE in .env")
     parser.add_argument("--llm-deployment", default="gpt-6.1-sol")
     parser.add_argument("--decision-deployment", default="decision-1.1")
     args = parser.parse_args()
     settings = dotenv_values(args.env_file)
+    mode = args.auth_mode or settings.get("MODEL_AUTH_MODE", "entra")
+    if mode not in ("entra", "api-key"):
+        parser.error("MODEL_AUTH_MODE must be 'entra' or 'api-key'")
+    settings["MODEL_AUTH_MODE"] = mode
     if bool(args.model_resource_group) != bool(args.model_account):
         parser.error("--model-resource-group and --model-account must be supplied together")
+    if mode == "entra" and not args.model_account:
+        parser.error("--model-resource-group and --model-account are required for managed identity role assignments")
+    model_scope = None
     if args.model_account:
-        settings.update(model_settings(
+        models, model_scope = model_settings(
             args.model_resource_group, args.model_account,
-            args.llm_deployment, args.decision_deployment,
-        ))
-    required = (
-        "AZURE_OPENAI_ENDPOINT", "AZURE_OPENAI_API_KEY", "AZURE_OPENAI_DEPLOYMENT",
-        "DECISION_ENDPOINT", "DECISION_API_KEY", "DECISION_DEPLOYMENT",
-    )
+            args.llm_deployment, args.decision_deployment, mode,
+        )
+        settings.update(models)
+    required = ["AZURE_OPENAI_ENDPOINT", "AZURE_OPENAI_DEPLOYMENT", "DECISION_ENDPOINT", "DECISION_DEPLOYMENT"]
+    if mode == "api-key":
+        required.extend(("AZURE_OPENAI_API_KEY", "DECISION_API_KEY"))
     missing = [key for key in required if not settings.get(key)]
     if missing:
         parser.error("Configure these settings before deploying: " + ", ".join(missing))
@@ -145,17 +186,13 @@ def main():
     registry = outputs["registry"]["value"]
     identity = outputs["identity"]["value"]
     environment_id = outputs["environmentId"]["value"]
-    assignments = az(
-        "role", "assignment", "list", "--scope", registry["id"], "--role", "AcrPull",
-        "--fill-principal-name", "false",
-        "--query", f"[?principalId=='{identity['principalId']}']",
-    )
-    if not assignments:
-        az(
-            "role", "assignment", "create", "--assignee-object-id", identity["principalId"],
-            "--assignee-principal-type", "ServicePrincipal", "--role", "AcrPull",
-            "--scope", registry["id"], output=False,
-        )
+    ensure_role_assignment(registry["id"], "AcrPull", identity["principalId"])
+    if mode == "entra":
+        settings["AZURE_CLIENT_ID"] = identity["clientId"]
+        for role in ("Cognitive Services OpenAI User", "Cognitive Services User"):
+            ensure_role_assignment(model_scope, role, identity["principalId"])
+    else:
+        settings.pop("AZURE_CLIENT_ID", None)
     tag = f"demo:{time.time_ns()}"
     print("Building the container in Azure (no local Docker required)...", flush=True)
     # Stage only runtime files: .env, Git history, and local caches never leave the machine.
@@ -173,7 +210,6 @@ def main():
         args.location, environment_id, identity["id"], registry["loginServer"],
         f"{registry['loginServer']}/{tag}", settings,
     )
-    # Secrets go via a mode-0600 temporary file, not CLI arguments or build context.
     with tempfile.TemporaryDirectory(prefix="decision-config-") as directory:
         config_path = Path(directory) / "config.json"
         with config_path.open("w") as handle:
@@ -181,6 +217,15 @@ def main():
             json.dump(config, handle)
         az("containerapp", "create", "-g", group, "-n", args.name, "--yaml", str(config_path), output=False)
     deployed = az("containerapp", "show", "-g", group, "-n", args.name)
+    old_secrets = [
+        secret["name"] for secret in (deployed["properties"]["configuration"].get("secrets") or [])
+        if secret["name"] in ("azure-openai-api-key", "decision-api-key")
+    ]
+    if mode == "entra" and old_secrets:
+        az(
+            "containerapp", "secret", "remove", "-g", group, "-n", args.name,
+            "--secret-names", *old_secrets, output=False,
+        )
     url = "https://" + deployed["properties"]["configuration"]["ingress"]["fqdn"]
     last_error = None
     for _ in range(30):
