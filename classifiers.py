@@ -16,7 +16,7 @@ import requests
 from pricing import estimate_cost, mock_cost
 
 DECISION_PATH = "/providers/microsoft/v1/systemone"
-DECISION_TOKEN_SCOPE = "https://cognitiveservices.azure.com/.default"
+TOKEN_SCOPE = "https://cognitiveservices.azure.com/.default"
 QUESTION_NAME = "category"
 
 # Reuse connections across calls, like the OpenAI client does.
@@ -28,17 +28,26 @@ def _env(name, default=""):
 
 
 REQUIRED_SETTINGS = {
-    "openai": ["AZURE_OPENAI_ENDPOINT", "AZURE_OPENAI_API_KEY", "AZURE_OPENAI_DEPLOYMENT"],
-    # DECISION_API_KEY is optional: without it, Microsoft Entra ID (DefaultAzureCredential) is used.
+    "openai": ["AZURE_OPENAI_ENDPOINT", "AZURE_OPENAI_DEPLOYMENT"],
     "decision": ["DECISION_ENDPOINT", "DECISION_DEPLOYMENT"],
 }
+
+
+def _auth_mode():
+    mode = _env("MODEL_AUTH_MODE", "entra")
+    if mode not in ("entra", "api-key"):
+        raise ValueError("MODEL_AUTH_MODE must be 'entra' or 'api-key'")
+    return mode
 
 
 def missing_settings(model):
     """Names of required settings that are not configured for a model (none in mock mode)."""
     if mock_enabled():
         return []
-    return [n for n in REQUIRED_SETTINGS[model] if not _env(n)]
+    required = list(REQUIRED_SETTINGS[model])
+    if _auth_mode() == "api-key":
+        required.append("AZURE_OPENAI_API_KEY" if model == "openai" else "DECISION_API_KEY")
+    return [n for n in required if not _env(n)]
 
 
 def mock_enabled():
@@ -115,10 +124,16 @@ def _mock(text, labels):
 def _openai_client():
     from openai import AzureOpenAI
 
+    if _auth_mode() == "api-key":
+        auth = {"api_key": _env("AZURE_OPENAI_API_KEY")}
+    else:
+        from azure.identity import get_bearer_token_provider
+
+        auth = {"azure_ad_token_provider": get_bearer_token_provider(_entra_credential(), TOKEN_SCOPE)}
     return AzureOpenAI(
         azure_endpoint=_env("AZURE_OPENAI_ENDPOINT"),
-        api_key=_env("AZURE_OPENAI_API_KEY"),
         api_version=_env("AZURE_OPENAI_API_VERSION", "2024-10-21"),
+        **auth,
     )
 
 
@@ -152,21 +167,22 @@ def classify_openai(text, labels):
 
 @functools.lru_cache(maxsize=1)
 def _entra_credential():
-    from azure.identity import DefaultAzureCredential
+    from azure.identity import DefaultAzureCredential, ManagedIdentityCredential
 
+    client_id = _env("AZURE_CLIENT_ID")
+    if client_id:
+        return ManagedIdentityCredential(client_id=client_id)
     return DefaultAzureCredential()
 
 
 def _decision_headers():
-    """Use an API key when configured, otherwise a Microsoft Entra ID bearer token."""
-    headers = {"Content-Type": "application/json"}
-    api_key = _env("DECISION_API_KEY")
-    if api_key:
-        headers["api-key"] = api_key
-    else:
-        token = _entra_credential().get_token(DECISION_TOKEN_SCOPE).token
-        headers["Authorization"] = "Bearer " + token
-    return headers
+    if _auth_mode() == "api-key":
+        key = _env("DECISION_API_KEY")
+        if not key:
+            raise ValueError("DECISION_API_KEY is required when MODEL_AUTH_MODE=api-key")
+        return {"Content-Type": "application/json", "api-key": key}
+    token = _entra_credential().get_token(TOKEN_SCOPE).token
+    return {"Content-Type": "application/json", "Authorization": "Bearer " + token}
 
 
 def parse_decision_response(data, keys):

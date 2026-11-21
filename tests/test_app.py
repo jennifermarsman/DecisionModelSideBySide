@@ -11,6 +11,11 @@ from app import app
 from scenarios import SCENARIOS, load_data
 
 
+@pytest.fixture(autouse=True)
+def default_authentication(monkeypatch):
+    monkeypatch.delenv("MODEL_AUTH_MODE", raising=False)
+
+
 @pytest.fixture
 def client():
     app.config["TESTING"] = True
@@ -95,7 +100,7 @@ def test_match_label():
 
 def test_classify_openai_uses_model_default_temperature(monkeypatch, client):
     monkeypatch.setenv("AZURE_OPENAI_ENDPOINT", "https://example.openai.azure.com/")
-    monkeypatch.setenv("AZURE_OPENAI_API_KEY", "test-key")
+    monkeypatch.delenv("AZURE_OPENAI_API_KEY", raising=False)
     monkeypatch.setenv("AZURE_OPENAI_DEPLOYMENT", "my-reasoning-deployment")
     monkeypatch.delenv("MOCK_MODELS", raising=False)
     calls = []
@@ -154,7 +159,10 @@ def test_decision_request_and_response(monkeypatch):
 
 def test_classify_decision_calls_endpoint(monkeypatch, client):
     monkeypatch.setenv("DECISION_ENDPOINT", "https://example.services.ai.azure.com/")
-    monkeypatch.setenv("DECISION_API_KEY", "test-key")
+    monkeypatch.setattr(
+        classifiers, "_entra_credential",
+        lambda: SimpleNamespace(get_token=lambda scope: SimpleNamespace(token="entra-token")),
+    )
     monkeypatch.setenv("DECISION_DEPLOYMENT", "my-decision")
     monkeypatch.delenv("MOCK_MODELS", raising=False)
     calls = []
@@ -183,7 +191,8 @@ def test_classify_decision_calls_endpoint(monkeypatch, client):
     assert data["usage"] == {"input_tokens": 100, "output_tokens": 1}
     assert data["cost_usd"] == pytest.approx(101 * 0.042 / 1_000_000)
     assert calls[0][0] == "https://example.services.ai.azure.com/providers/microsoft/v1/systemone"
-    assert calls[0][1]["api-key"] == "test-key"
+    assert calls[0][1]["Authorization"] == "Bearer entra-token"
+    assert "api-key" not in calls[0][1]
 
 
 def test_classify_validation_and_mock(monkeypatch, client):
@@ -211,18 +220,141 @@ def test_decision_refusal():
     assert classifiers.parse_decision_response({"answers": {"category": {"type": "refusal"}}}, keys) == ("(refused)", None)
 
 
-def test_decision_uses_entra_id_without_api_key(monkeypatch):
-    monkeypatch.delenv("DECISION_API_KEY", raising=False)
+def test_decision_always_uses_current_entra_token_even_with_legacy_key(monkeypatch):
+    monkeypatch.setenv("DECISION_API_KEY", "obsolete-key")
+    tokens = iter(["first-token", "refreshed-token"])
 
     class FakeCredential:
         def get_token(self, scope):
             assert scope == "https://cognitiveservices.azure.com/.default"
-            return type("Token", (), {"token": "entra-token"})()
+            return SimpleNamespace(token=next(tokens))
 
     monkeypatch.setattr(classifiers, "_entra_credential", lambda: FakeCredential())
-    headers = classifiers._decision_headers()
-    assert headers["Authorization"] == "Bearer " + "entra-token"
-    assert "api-key" not in headers
+    for token in ("first-token", "refreshed-token"):
+        headers = classifiers._decision_headers()
+        assert headers["Authorization"] == "Bearer " + token
+        assert "api-key" not in headers
+
+
+@pytest.mark.parametrize("client_id", ["", "managed-client-id"])
+def test_credential_selects_managed_identity_or_local_developer(monkeypatch, client_id):
+    import azure.identity
+
+    monkeypatch.setenv("AZURE_CLIENT_ID", client_id)
+    calls = []
+    credential = object()
+
+    def managed(**kwargs):
+        calls.append(("managed", kwargs))
+        return credential
+
+    def local():
+        calls.append(("local", {}))
+        return credential
+
+    monkeypatch.setattr(azure.identity, "ManagedIdentityCredential", managed)
+    monkeypatch.setattr(azure.identity, "DefaultAzureCredential", local)
+    classifiers._entra_credential.cache_clear()
+    try:
+        assert classifiers._entra_credential() is credential
+        assert classifiers._entra_credential() is credential
+        assert calls == ([("managed", {"client_id": client_id})] if client_id else [("local", {})])
+    finally:
+        classifiers._entra_credential.cache_clear()
+
+
+@pytest.mark.parametrize("auth_mode", ["entra", "api-key"])
+def test_openai_authentication_requires_explicit_key_mode(monkeypatch, auth_mode):
+    import azure.identity
+    import httpx2 as httpx
+
+    monkeypatch.setenv("AZURE_OPENAI_ENDPOINT", "https://example.openai.azure.com/")
+    monkeypatch.setenv("AZURE_OPENAI_API_KEY", "obsolete-key")
+    monkeypatch.setenv("MODEL_AUTH_MODE", auth_mode)
+    monkeypatch.delenv("AZURE_OPENAI_AD_TOKEN", raising=False)
+    tokens = iter(["first-token", "refreshed-token"])
+    credential = object()
+    monkeypatch.setattr(classifiers, "_entra_credential", lambda: credential)
+    provider_calls = []
+
+    def provider(actual_credential, scope):
+        assert actual_credential is credential
+        assert scope == "https://cognitiveservices.azure.com/.default"
+
+        def token():
+            value = next(tokens)
+            provider_calls.append(value)
+            return value
+
+        return token
+
+    monkeypatch.setattr(azure.identity, "get_bearer_token_provider", provider)
+    requests = []
+
+    def respond(request):
+        requests.append(request)
+        return httpx.Response(200, json={
+            "id": "test", "object": "chat.completion", "created": 1, "model": "chat",
+            "choices": [{"index": 0, "message": {"role": "assistant", "content": "Other"},
+                         "finish_reason": "stop"}],
+        })
+
+    classifiers._openai_client.cache_clear()
+    client = classifiers._openai_client()
+    try:
+        with httpx.Client(transport=httpx.MockTransport(respond)) as http_client:
+            test_client = client.with_options(http_client=http_client)
+            for _ in range(2):
+                test_client.chat.completions.create(
+                    model="chat", messages=[{"role": "user", "content": "hi"}],
+                )
+        if auth_mode == "entra":
+            assert provider_calls == ["first-token", "refreshed-token"]
+            assert [r.headers["Authorization"] for r in requests] == [
+                "Bearer first-token", "Bearer refreshed-token",
+            ]
+            assert all("api-key" not in r.headers for r in requests)
+        else:
+            assert provider_calls == []
+            assert [r.headers["api-key"] for r in requests] == ["obsolete-key", "obsolete-key"]
+            assert all("Authorization" not in r.headers for r in requests)
+    finally:
+        client.close()
+        classifiers._openai_client.cache_clear()
+
+
+def test_decision_explicit_key_mode_does_not_acquire_token(monkeypatch):
+    monkeypatch.setenv("MODEL_AUTH_MODE", "api-key")
+    monkeypatch.setenv("DECISION_API_KEY", "test-key")
+    monkeypatch.setattr(classifiers, "_entra_credential", lambda: pytest.fail("Unexpected token acquisition"))
+    assert classifiers._decision_headers() == {
+        "Content-Type": "application/json", "api-key": "test-key",
+    }
+
+
+@pytest.mark.parametrize("model,key", [("openai", "AZURE_OPENAI_API_KEY"), ("decision", "DECISION_API_KEY")])
+def test_key_mode_reports_missing_key(monkeypatch, model, key):
+    monkeypatch.setenv("MODEL_AUTH_MODE", "api-key")
+    monkeypatch.delenv("MOCK_MODELS", raising=False)
+    monkeypatch.delenv(key, raising=False)
+    assert key in classifiers.missing_settings(model)
+
+
+def test_entra_failure_never_falls_back_to_key(monkeypatch):
+    monkeypatch.setenv("DECISION_API_KEY", "obsolete-key")
+
+    def fail():
+        raise RuntimeError("Managed identity is unavailable")
+
+    monkeypatch.setattr(classifiers, "_entra_credential", fail)
+    with pytest.raises(RuntimeError, match="Managed identity is unavailable"):
+        classifiers._decision_headers()
+
+
+def test_invalid_authentication_mode_is_rejected(monkeypatch):
+    monkeypatch.setenv("MODEL_AUTH_MODE", "typo")
+    with pytest.raises(ValueError, match="MODEL_AUTH_MODE"):
+        classifiers._decision_headers()
 
 
 @pytest.mark.parametrize("model", ["openai", "decision"])
