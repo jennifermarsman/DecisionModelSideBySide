@@ -29,6 +29,24 @@ LABELS = [
 ]
 
 
+@pytest.mark.parametrize("model", ["openai", "decision"])
+@pytest.mark.parametrize("route", ["classify", "run"])
+def test_invalid_authentication_mode_returns_json(monkeypatch, client, model, route):
+    monkeypatch.setenv("MODEL_AUTH_MODE", "typo")
+    monkeypatch.delenv("MOCK_MODELS", raising=False)
+    monkeypatch.setitem(
+        app_module.CLASSIFIERS, model,
+        lambda *args: pytest.fail("Invalid configuration must not call the model"),
+    )
+    endpoint = f"/api/classify/{model}" if route == "classify" else f"/api/run/{model}/expenses"
+    response = client.post(endpoint, json={"text": "Needs help", "labels": LABELS})
+    assert response.status_code == 500
+    assert response.is_json
+    assert response.get_json() == {
+        "error": "Invalid configuration: MODEL_AUTH_MODE must be 'entra' or 'api-key'.",
+    }
+
+
 @pytest.mark.parametrize("key", list(SCENARIOS))
 def test_scenarios_have_data_and_labels(key):
     scenario = SCENARIOS[key]

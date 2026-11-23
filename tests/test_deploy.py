@@ -135,9 +135,14 @@ def test_deploy_assigns_model_roles_and_manages_secrets(monkeypatch, tmp_path, c
                     "AZURE_OPENAI_API_KEY", "DECISION_API_KEY",
                 }
         if args[:2] == ("containerapp", "show"):
-            return {"properties": {"configuration": {
+            return {"properties": {"latestRevisionName": "demo--new", "configuration": {
                 "ingress": {"fqdn": "demo.example"}, "secrets": old_secrets,
             }}}
+        if args[:3] == ("containerapp", "revision", "list"):
+            return [{
+                "name": "demo--new",
+                "properties": {"active": True, "healthState": "Healthy", "template": {}},
+            }]
         return None
 
     class HealthResponse:
@@ -169,6 +174,82 @@ def test_deploy_assigns_model_roles_and_manages_secrets(monkeypatch, tmp_path, c
     assert bool(removals) == (bool(old_secrets) and auth_mode == "entra")
     if removals:
         assert removals[0][-2:] == ("azure-openai-api-key", "decision-api-key")
+        assert calls.index(removals[0]) > next(
+            index for index, call in enumerate(calls)
+            if call[:3] == ("containerapp", "revision", "list")
+        )
+
+
+@pytest.mark.parametrize("pending", [
+    "missing", "unhealthy", "inactive", "old-active", "new-reference", "scale-reference",
+])
+def test_secret_cleanup_waits_for_healthy_replacement_and_unused_secrets(monkeypatch, pending):
+    secret_names = ["azure-openai-api-key", "decision-api-key"]
+    secret_template = {"containers": [{"env": [{"secretRef": secret_names[0]}]}]}
+    ready = {
+        "name": "demo--new",
+        "properties": {"active": True, "healthState": "Healthy", "template": {}},
+    }
+    old = {
+        "name": "demo--old",
+        "properties": {"active": False, "healthState": "Healthy", "template": secret_template},
+    }
+    waiting = json.loads(json.dumps([ready, old]))
+    if pending == "missing":
+        waiting = [old]
+    elif pending == "unhealthy":
+        waiting[0]["properties"]["healthState"] = "Unhealthy"
+    elif pending == "inactive":
+        waiting[0]["properties"]["active"] = False
+    elif pending == "old-active":
+        waiting[1]["properties"]["active"] = True
+    elif pending == "new-reference":
+        waiting[0]["properties"]["template"] = secret_template
+    else:
+        waiting[0]["properties"]["template"] = {
+            "scale": {"rules": [{"custom": {"auth": [{"secretRef": secret_names[1]}]}}]},
+        }
+    # Unrelated secrets and inactive revisions must not block cleanup.
+    ready["properties"]["template"] = {
+        "containers": [{"env": [{"secretRef": "unrelated-secret"}]}],
+    }
+    snapshots = iter([waiting, [ready, old]])
+    calls = []
+    sleeps = []
+
+    def fake_az(*args):
+        calls.append(args)
+        assert args == ("containerapp", "revision", "list", "-g", "group", "-n", "demo", "--all")
+        return next(snapshots)
+
+    monkeypatch.setattr(deploy, "az", fake_az)
+    monkeypatch.setattr(deploy.time, "sleep", sleeps.append)
+    deploy.wait_for_secret_cleanup("group", "demo", "demo--new", secret_names)
+    assert len(calls) == 2
+    assert sleeps == [5]
+
+
+@pytest.mark.parametrize("health,template", [
+    ("Unhealthy", {}),
+    ("Healthy", {"initContainers": [{"env": [{"secretRef": "decision-api-key"}]}]}),
+])
+def test_secret_cleanup_times_out_without_deleting_secrets(monkeypatch, health, template):
+    calls = []
+    sleeps = []
+
+    def fake_az(*args):
+        calls.append(args)
+        assert args[:3] == ("containerapp", "revision", "list")
+        return [{
+            "name": "demo--new",
+            "properties": {"active": True, "healthState": health, "template": template},
+        }]
+
+    monkeypatch.setattr(deploy, "az", fake_az)
+    monkeypatch.setattr(deploy.time, "sleep", sleeps.append)
+    with pytest.raises(RuntimeError, match="secrets were retained"):
+        deploy.wait_for_secret_cleanup("group", "demo", "demo--new", ["decision-api-key"])
+    assert len(calls) == len(sleeps) == 30
 
 
 def test_existing_role_assignments_are_reused(monkeypatch):

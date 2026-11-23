@@ -134,6 +134,38 @@ def configuration(location, environment, identity, registry, image, settings):
     }
 
 
+def wait_for_secret_cleanup(resource_group, name, revision_name, secret_names):
+    def references_secret(value):
+        if isinstance(value, dict):
+            return value.get("secretRef") in secret_names or any(
+                references_secret(child) for child in value.values()
+            )
+        if isinstance(value, list):
+            return any(references_secret(child) for child in value)
+        return False
+
+    for _ in range(30):
+        revisions = az("containerapp", "revision", "list", "-g", resource_group, "-n", name, "--all")
+        replacement_ready = any(
+            revision["name"] == revision_name
+            and revision["properties"].get("active")
+            and revision["properties"].get("healthState") == "Healthy"
+            for revision in revisions
+        )
+        secrets_in_use = any(
+            revision["properties"].get("active")
+            and references_secret(revision["properties"]["template"])
+            for revision in revisions
+        )
+        if replacement_ready and not secrets_in_use:
+            return
+        time.sleep(5)
+    raise RuntimeError(
+        f"Revision {revision_name} is not healthy or active revisions still reference API-key secrets; "
+        "secrets were retained. Check Container App revisions before retrying deployment."
+    )
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--location", default="centralus")
@@ -222,6 +254,9 @@ def main():
         if secret["name"] in ("azure-openai-api-key", "decision-api-key")
     ]
     if mode == "entra" and old_secrets:
+        wait_for_secret_cleanup(
+            group, args.name, deployed["properties"]["latestRevisionName"], old_secrets,
+        )
         az(
             "containerapp", "secret", "remove", "-g", group, "-n", args.name,
             "--secret-names", *old_secrets, output=False,
