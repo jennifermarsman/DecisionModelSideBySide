@@ -18,6 +18,12 @@ param decisionModelVersion string = '1'
 param decisionCapacity int = 2160
 param deploymentSku string = 'DataZoneStandard'
 
+@allowed([
+  'entra'
+  'api-key'
+])
+param authMode string = 'entra'
+
 resource account 'Microsoft.CognitiveServices/accounts@2025-06-01' = {
   name: accountName
   location: location
@@ -31,7 +37,7 @@ resource account 'Microsoft.CognitiveServices/accounts@2025-06-01' = {
   properties: {
     customSubDomainName: accountName
     allowProjectManagement: true
-    disableLocalAuth: false
+    disableLocalAuth: authMode == 'entra'
     publicNetworkAccess: 'Enabled'
   }
 }

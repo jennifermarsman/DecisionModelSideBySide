@@ -123,7 +123,10 @@ def classify(model):
         return jsonify({"error": error}), 400
     if not text or not labels:
         return jsonify({"error": "Both 'text' and at least one label are required."}), 400
-    missing = missing_settings(model)
+    try:
+        missing = missing_settings(model)
+    except ValueError:
+        return jsonify({"error": "Invalid configuration: MODEL_AUTH_MODE must be 'entra' or 'api-key'."}), 500
     if missing:
         return jsonify({"error": f"Missing configuration: set {', '.join(missing)} in your .env file."}), 500
     if not _batch_slots.acquire(blocking=False):
@@ -149,7 +152,10 @@ def run_batch(model, scenario):
     labels, error = validate_labels(body["labels"])
     if error:
         return jsonify({"error": error}), 400
-    missing = missing_settings(model)
+    try:
+        missing = missing_settings(model)
+    except ValueError:
+        return jsonify({"error": "Invalid configuration: MODEL_AUTH_MODE must be 'entra' or 'api-key'."}), 500
     if missing:
         return jsonify({"error": f"Missing configuration: set {', '.join(missing)}."}), 500
     items = load_data(SCENARIOS[scenario]["data_file"])
