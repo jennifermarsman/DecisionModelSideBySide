@@ -192,12 +192,13 @@ MODEL_RESOURCE_GROUP="<model-resource-group>"
 MODEL_ACCOUNT="<model-resource-name>"
 ```
 
-**3. Rebuild and deploy the app.** In the same shell:
+**3. Rebuild and deploy the app.** Run this in the same shell. The default resource
+group is `rg-decision-sidebyside-centralus`. To use a different name, add
+`--resource-group "<demo-resource-group>"` to the command.
 
 ```bash
 python scripts/deploy.py \
   --location "$LOCATION" \
-  --resource-group "<demo-resource-group>" \
   --name decision-sidebyside \
   --model-resource-group "$MODEL_RESOURCE_GROUP" \
   --model-account "$MODEL_ACCOUNT" \
